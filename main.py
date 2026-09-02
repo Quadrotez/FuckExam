@@ -10,7 +10,7 @@ import sys
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 from pynput import keyboard
 
@@ -78,21 +78,42 @@ def make_filename(output_dir: Path) -> Path:
     return output_dir / f"screenshot_{timestamp}.png"
 
 
-def screenshot_with_grim(destination: Path) -> None:
-    if shutil.which("grim") is None:
-        raise RuntimeError(
-            "В Wayland-сессии не найден grim. Установи его пакетным менеджером "
-            "своего дистрибутива и повтори запуск."
-        )
-    result = subprocess.run(
-        ["grim", str(destination)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+def run_capture_command(command: list[str], destination: Path, backend: str) -> None:
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         details = result.stderr.strip() or result.stdout.strip() or "нет подробностей"
-        raise RuntimeError(f"grim завершился с кодом {result.returncode}: {details}")
+        raise RuntimeError(f"{backend} завершился с кодом {result.returncode}: {details}")
+    if not destination.is_file() or destination.stat().st_size == 0:
+        raise RuntimeError(f"{backend} завершился успешно, но файл скриншота не создан")
+
+
+def screenshot_with_spectacle(destination: Path) -> None:
+    """Capture through KDE Spectacle, which does not require wlr-screencopy."""
+    if shutil.which("spectacle") is None:
+        raise RuntimeError("Не найден KDE Spectacle")
+    run_capture_command(
+        ["spectacle", "--background", "--nonotify", "--fullscreen", "--output", str(destination)],
+        destination,
+        "Spectacle",
+    )
+
+
+def screenshot_with_gnome_screenshot(destination: Path) -> None:
+    """Capture through GNOME Screenshot when available."""
+    if shutil.which("gnome-screenshot") is None:
+        raise RuntimeError("Не найден gnome-screenshot")
+    run_capture_command(
+        ["gnome-screenshot", "--file", str(destination)],
+        destination,
+        "gnome-screenshot",
+    )
+
+
+def screenshot_with_grim(destination: Path) -> None:
+    """Capture through grim for compositors implementing wlr-screencopy."""
+    if shutil.which("grim") is None:
+        raise RuntimeError("Не найден grim")
+    run_capture_command(["grim", str(destination)], destination, "grim")
 
 
 def screenshot_with_mss(destination: Path) -> None:
@@ -108,14 +129,51 @@ def screenshot_with_mss(destination: Path) -> None:
         to_png(image.rgb, image.size, output=str(destination))
 
 
-def take_screenshot(output_dir: Path) -> Path:
+def screenshot_wayland(destination: Path) -> str:
+    """Select the best available compositor-native capture backend."""
+    desktop = os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
+    candidates: list[tuple[str, Callable[[Path], None]]] = []
+
+    if "kde" in desktop or os.environ.get("KDE_FULL_SESSION"):
+        candidates.append(("spectacle", screenshot_with_spectacle))
+    if "gnome" in desktop:
+        candidates.append(("gnome-screenshot", screenshot_with_gnome_screenshot))
+    candidates.extend([
+        ("spectacle", screenshot_with_spectacle),
+        ("gnome-screenshot", screenshot_with_gnome_screenshot),
+        ("grim", screenshot_with_grim),
+    ])
+
+    attempted: set[str] = set()
+    errors: list[str] = []
+    for name, capture in candidates:
+        if name in attempted or shutil.which(name) is None:
+            continue
+        attempted.add(name)
+        try:
+            capture(destination)
+            return name
+        except RuntimeError as error:
+            errors.append(str(error))
+            destination.unlink(missing_ok=True)
+
+    if errors:
+        raise RuntimeError("; ".join(errors))
+    raise RuntimeError(
+        "Не найден backend скриншотов для Wayland. Установи Spectacle, "
+        "gnome-screenshot или grim."
+    )
+
+
+def take_screenshot(output_dir: Path) -> tuple[Path, str]:
     output_dir.mkdir(parents=True, exist_ok=True)
     destination = make_filename(output_dir)
     if is_wayland():
-        screenshot_with_grim(destination)
+        backend = screenshot_wayland(destination)
     else:
         screenshot_with_mss(destination)
-    return destination
+        backend = "mss"
+    return destination, backend
 
 
 class HotkeyScreenshotApp:
@@ -148,8 +206,8 @@ class HotkeyScreenshotApp:
             return
         try:
             LOGGER.info("Создаю скриншот...")
-            destination = take_screenshot(self.output_dir)
-            LOGGER.info("Скриншот сохранён: %s", destination)
+            destination, backend = take_screenshot(self.output_dir)
+            LOGGER.info("Скриншот сохранён: %s (backend: %s)", destination, backend)
         except Exception as error:  # noqa: BLE001 - ошибка должна быть видна пользователю
             LOGGER.error("Не удалось создать скриншот: %s", error)
         finally:
@@ -159,7 +217,10 @@ class HotkeyScreenshotApp:
         listener = keyboard.Listener(on_press=self.on_press, on_release=self.on_release)
         listener.start()
         LOGGER.info("Горячая клавиша: %s", "+".join(sorted(self.hotkey)))
-        LOGGER.info("Backend: %s", "grim (Wayland)" if is_wayland() else "mss")
+        if is_wayland():
+            LOGGER.info("Backend: compositor-native Wayland capture")
+        else:
+            LOGGER.info("Backend: mss")
         LOGGER.info("Скриншоты будут сохраняться в: %s", self.output_dir)
         LOGGER.info("Ожидание нажатия. Для выхода нажми Ctrl+C.")
         try:
