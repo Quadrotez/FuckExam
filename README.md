@@ -1,21 +1,20 @@
 # FuckExam Screenshot
 
-Фоновое приложение для создания полноэкранного скриншота по глобальному хоткею, OCR-распознавания текста, анализа распознанного текста через OpenRouter или Groq и отправки результата в Telegram.
+Фоновое приложение для создания полноэкранного скриншота по глобальному хоткею, чтения изображения vision-моделью или OCR-распознавания текста, анализа содержимого через OpenRouter/Groq и отправки результата в Telegram.
 
 ## Pipeline
 
-После нажатия хоткея приложение последовательно выполняет четыре шага: создаёт PNG-скриншот, распознаёт весь видимый текст через Tesseract, передаёт распознанный текст выбранной OpenAI-compatible LLM API и отправляет в Telegram ответ нейронки вместе с OCR-текстом.
+После нажатия хоткея приложение создаёт PNG-скриншот. В режиме `vision = auto` оно отправляет исходное изображение напрямую моделям, которые распознаются как vision-модели; это позволяет лучше читать мелкий текст, колонки и математические выражения. Для остальных моделей используется локальный Tesseract.
 
 | Этап | Реализация |
 |---|---|
 | Хоткей | `pynput`, по умолчанию `Ctrl+Alt+PrintScreen` |
-| Wayland KDE | Spectacle, затем fallback на другие backend |
-| Wayland GNOME | GNOME Screenshot, затем fallback на другие backend |
-| Другой Wayland | `grim`, если compositor поддерживает `wlr-screencopy` |
+| Wayland | Spectacle, GNOME Screenshot или grim |
 | X11, Windows, macOS | `mss` |
-| OCR | CLI `tesseract`, языки задаются в конфиге |
+| Изображение в LLM | OpenAI-compatible `image_url` с data URI |
+| OCR fallback | CLI `tesseract`, языки и `psm` задаются в конфиге |
 | LLM | OpenRouter или Groq через JSON API |
-| Уведомление | Telegram Bot API с автоматическим разбиением длинных сообщений |
+| Уведомление | Telegram Bot API, включая ответ и OCR-текст |
 | Сеть | Прямое соединение, HTTP(S)- или SOCKS5-прокси |
 
 ## Установка
@@ -26,63 +25,40 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-На Arch Linux установи Tesseract с русскими и английскими языковыми данными:
+На Arch Linux для OCR установи Tesseract и языковые данные:
 
 ```bash
 sudo pacman -S tesseract tesseract-data-rus tesseract-data-eng
 ```
 
-Для Wayland также нужен один из backend захвата. Для KDE Plasma рекомендуется:
-
-```bash
-sudo pacman -S spectacle
-```
-
-Для GNOME:
-
-```bash
-sudo pacman -S gnome-screenshot
-```
-
-Для совместимых с `wlr-screencopy` композиторов:
-
-```bash
-sudo pacman -S grim
-```
-
 ## Конфигурация
 
-Рабочий `config.ini` намеренно не хранится в Git. Создай его из шаблона:
+Рабочий `config.ini` не хранится в Git:
 
 ```bash
 cp config.ini.example config.ini
 $EDITOR config.ini
 ```
 
-Шаблон содержит следующие основные параметры:
+Ключевые параметры:
 
 ```ini
-[screenshot]
-hotkey = ctrl+alt+printscreen
-output_dir = screenshots
-
-[ocr]
-command = tesseract
-language = rus+eng
-psm = 6
-
 [llm]
 provider = openrouter
 model = openai/gpt-4o-mini
 api_key = ВСТАВЬ_КЛЮЧ_ПРОВАЙДЕРА
+# auto, always или never
+vision = auto
+# Дополнительные подстроки моделей с поддержкой изображений.
+vision_models =
 temperature = 0.2
 max_tokens = 2000
-system_prompt = Ты полезный ассистент. Проанализируй распознанный текст со скриншота и дай краткий, точный ответ на русском языке.
 
 [telegram]
 bot_token = ВСТАВЬ_ТОКЕН_TELEGRAM-БОТА
 chat_id = ВСТАВЬ_CHAT_ID
-parse_mode = HTML
+# Для длинного OCR лучше оставить пустым.
+parse_mode =
 include_ocr_text = true
 
 [network]
@@ -90,11 +66,17 @@ proxy_url =
 timeout = 60
 ```
 
-Для OpenRouter оставь `provider = openrouter`, укажи OpenRouter API key и выбранную модель. Для Groq укажи `provider = groq`, Groq API key и модель, доступную в твоём аккаунте. Поле `base_url` можно не заполнять: приложение само выберет стандартный endpoint провайдера. Оно поддерживает также явный пользовательский endpoint.
+Режимы `vision` работают так:
 
-В `proxy_url` можно указать, например, `http://127.0.0.1:8080`, `socks5://127.0.0.1:1080` или `socks5h://127.0.0.1:1080`. Для SOCKS5 используется extra-зависимость `requests[socks]`, уже включённая в `requirements.txt`.
+| Значение | Поведение |
+|---|---|
+| `auto` | Vision используется для известных моделей и моделей, совпавших с `vision_models`; иначе запускается Tesseract |
+| `always` | Всегда отправляется исходная картинка. Ошибка API не маскируется OCR fallback |
+| `never` | Всегда используется Tesseract |
 
-Telegram-бот должен иметь доступ к чату. `chat_id` можно получить через Telegram API или вспомогательного бота после отправки сообщения целевому боту. Значения `api_key`, `bot_token` и proxy credentials не выводятся в лог и не должны публиковаться.
+В `vision_models` можно вручную добавить подстроку имени модели через запятую, например `my-custom-vision-model`. Если модель поддерживает изображения, но её название не распознаётся автоматически, укажи `vision = always` или добавь её в этот список.
+
+Для OpenRouter оставь `provider = openrouter`, а для Groq используй `provider = groq`. Поле `base_url` можно не заполнять: приложение выберет стандартный endpoint провайдера. В `proxy_url` поддерживаются `http://`, `https://`, `socks5://` и `socks5h://`.
 
 ## Запуск
 
@@ -102,7 +84,9 @@ Telegram-бот должен иметь доступ к чату. `chat_id` мо
 python main.py
 ```
 
-При нажатии `Ctrl+Alt+PrintScreen` приложение сохранит снимок в `screenshots/`, распознает текст, запросит ответ у выбранной модели и отправит в Telegram как ответ, так и весь распознанный текст. Для остановки нажми `Ctrl+C` в терминале.
+При нажатии `Ctrl+Alt+PrintScreen` приложение сохранит снимок, передаст его vision-модели либо выполнит OCR fallback, запросит ответ и отправит в Telegram ответ вместе с полным локальным OCR-текстом, если он создавался. Для остановки нажми `Ctrl+C`.
+
+Для автоматической установки можно использовать `install.sh`/`run.sh` на Linux либо `install.bat`/`run.bat` на Windows.
 
 ## Проверка
 
@@ -112,26 +96,18 @@ python -m unittest discover -s tests -v
 
 ## Ограничения
 
-Глобальный перехват клавиш через `pynput` в Wayland зависит от compositor и его политики безопасности. OCR выполняется локально через установленный Tesseract. Сетевые вызовы к LLM и Telegram выполняются последовательно после создания скриншота, поэтому во время обработки повторные нажатия пропускаются. Токены не передаются в репозиторий: файл `config.ini` добавлен в `.gitignore`.
+Глобальный перехват клавиш через `pynput` в Wayland зависит от compositor и его политики безопасности. Автоматическое определение vision основано на имени модели и может быть расширено через `vision_models`; для полной уверенности используй `vision = always`. OCR выполняется локально через Tesseract. Сетевые вызовы выполняются после создания скриншота, а повторные нажатия во время обработки пропускаются. Секреты не передаются в репозиторий: `config.ini` находится в `.gitignore`.
 
-## Быстрая установка и запуск
-
-Для Linux используй:
+## Быстрая установка
 
 ```bash
+# Linux
 ./install.sh
 ./run.sh
 ```
 
-`install.sh` создаёт `.venv`, устанавливает Python-зависимости и пытается установить Tesseract с русским и английским языками через `pacman`, `apt` или `dnf`. Скрипт также создаёт локальный `config.ini` из шаблона, если его ещё нет.
-
-Для Windows открой командную строку в каталоге проекта и выполни:
-
 ```bat
+:: Windows
 install.bat
 run.bat
 ```
-
-`install.bat` использует Python Launcher `py` и устанавливает Tesseract через `winget`. Если `winget` недоступен, Tesseract можно установить вручную со страницы [UB Mannheim Tesseract](https://github.com/UB-Mannheim/tesseract/wiki). `run.bat` автоматически добавляет стандартные каталоги Tesseract в `PATH` текущего процесса.
-
-Оба установщика создают `config.ini` только локально. Файл не отслеживается Git, поскольку содержит API-ключи и токен Telegram.

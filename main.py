@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import base64
 import configparser
 import html
 import logging
+import mimetypes
 import os
 import platform
 import shutil
@@ -16,23 +18,25 @@ from typing import Callable, Iterable
 import requests
 from pynput import keyboard
 
-
 ROOT = Path(__file__).resolve().parent
 CONFIG_FILE = ROOT / "config.ini"
 LOGGER = logging.getLogger("fuckexam-screenshot")
 
 KEY_ALIASES = {
     "control": "ctrl", "ctrl_l": "ctrl", "ctrl_r": "ctrl",
-    "shift_l": "shift", "shift_r": "shift",
-    "alt_l": "alt", "alt_r": "alt",
-    "cmd": "cmd", "cmd_l": "cmd", "cmd_r": "cmd",
-    "win": "cmd", "super": "cmd", "super_l": "cmd", "super_r": "cmd",
+    "shift_l": "shift", "shift_r": "shift", "alt_l": "alt", "alt_r": "alt",
+    "cmd": "cmd", "cmd_l": "cmd", "cmd_r": "cmd", "win": "cmd",
+    "super": "cmd", "super_l": "cmd", "super_r": "cmd",
     "print": "printscreen", "print_screen": "printscreen",
 }
 PROVIDER_URLS = {
     "openrouter": "https://openrouter.ai/api/v1/chat/completions",
     "groq": "https://api.groq.com/openai/v1/chat/completions",
 }
+VISION_MODEL_MARKERS = (
+    "vision", "vl", "gpt-4o", "gpt-4.1", "gemini", "claude-3", "claude-4",
+    "pixtral", "llama-4", "mistral-small-3.1",
+)
 
 
 def normalize_name(value: str) -> str:
@@ -187,7 +191,27 @@ def transcribe_image(image_path: Path, config: configparser.ConfigParser) -> str
     return text
 
 
-def llm_answer(text: str, config: configparser.ConfigParser) -> str:
+def vision_mode(config: configparser.ConfigParser) -> str:
+    mode = config.get("llm", "vision", fallback="auto").strip().lower()
+    if mode not in {"auto", "always", "never"}:
+        raise ValueError("llm.vision должен быть auto, always или never")
+    return mode
+
+
+def model_supports_vision(config: configparser.ConfigParser) -> bool:
+    model = config.get("llm", "model", fallback="").lower()
+    custom = config.get("llm", "vision_models", fallback="")
+    custom_markers = tuple(item.strip().lower() for item in custom.split(",") if item.strip())
+    return any(marker in model for marker in VISION_MODEL_MARKERS + custom_markers)
+
+
+def image_data_url(image_path: Path) -> str:
+    mime = mimetypes.guess_type(image_path.name)[0] or "image/png"
+    encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
+    return f"data:{mime};base64,{encoded}"
+
+
+def llm_request(image_path: Path | None, text: str, config: configparser.ConfigParser) -> str:
     provider = config.get("llm", "provider", fallback="openrouter").strip().lower()
     if provider not in PROVIDER_URLS:
         raise ValueError(f"Неизвестный provider: {provider}. Используй openrouter или groq.")
@@ -195,26 +219,45 @@ def llm_answer(text: str, config: configparser.ConfigParser) -> str:
     if not api_key or api_key.startswith("ВСТАВЬ"):
         raise RuntimeError("В config.ini не задан llm.api_key")
     url = config.get("llm", "base_url", fallback="").strip() or PROVIDER_URLS[provider]
+    system_prompt = config.get("llm", "system_prompt", fallback="Ответь по содержимому скриншота.")
+    if image_path is not None:
+        user_content = [
+            {"type": "text", "text": "Внимательно прочитай весь текст на изображении, включая мелкий текст и математические выражения. Сначала приведи полный распознанный текст без сокращений, затем отдельно дай ответ или решение."},
+            {"type": "image_url", "image_url": {"url": image_data_url(image_path)}},
+        ]
+    else:
+        user_content = f"Текст со скриншота, распознанный локально:\n\n{text}"
     payload = {
         "model": config.get("llm", "model"),
-        "messages": [
-            {"role": "system", "content": config.get("llm", "system_prompt", fallback="Ответь по распознанному тексту.")},
-            {"role": "user", "content": f"Текст со скриншота:\n\n{text}"},
-        ],
+        "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}],
         "temperature": config.getfloat("llm", "temperature", fallback=0.2),
         "max_tokens": config.getint("llm", "max_tokens", fallback=2000),
     }
     response = requests.post(url, headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}, json=payload, **request_kwargs(config))
     if not response.ok:
         raise RuntimeError(f"{provider} HTTP {response.status_code}: {response.text[:500]}")
-    data = response.json()
     try:
-        answer = data["choices"][0]["message"]["content"].strip()
+        answer = response.json()["choices"][0]["message"]["content"].strip()
     except (KeyError, IndexError, TypeError) as error:
         raise RuntimeError(f"Некорректный ответ от {provider}") from error
     if not answer:
         raise RuntimeError(f"{provider} вернул пустой ответ")
     return answer
+
+
+def llm_answer(image_path: Path, ocr_text: str, config: configparser.ConfigParser) -> tuple[str, bool]:
+    mode = vision_mode(config)
+    use_vision = mode == "always" or (mode == "auto" and model_supports_vision(config))
+    if use_vision:
+        try:
+            return llm_request(image_path, "", config), True
+        except RuntimeError as error:
+            if mode == "always":
+                raise
+            LOGGER.warning("Image input не принят моделью, переключаюсь на OCR: %s", error)
+    if not ocr_text:
+        ocr_text = transcribe_image(image_path, config)
+    return llm_request(None, ocr_text, config), False
 
 
 def send_telegram(text: str, config: configparser.ConfigParser) -> None:
@@ -234,27 +277,27 @@ def send_telegram(text: str, config: configparser.ConfigParser) -> None:
             raise RuntimeError(f"Telegram HTTP {response.status_code}: {response.text[:500]}")
 
 
-def format_telegram_message(answer: str, ocr_text: str, image_path: Path, config: configparser.ConfigParser) -> str:
+def format_telegram_message(answer: str, ocr_text: str, image_path: Path, config: configparser.ConfigParser, used_vision: bool) -> str:
     include_ocr = config.getboolean("telegram", "include_ocr_text", fallback=True)
-    if config.get("telegram", "parse_mode", fallback="").strip().upper() == "HTML":
-        result = f"<b>Ответ нейронки</b>\n{html.escape(answer)}"
-        if include_ocr:
-            result += f"\n\n<b>Распознанный текст</b>\n<pre>{html.escape(ocr_text)}</pre>"
-        result += f"\n\n<i>Скриншот: {html.escape(image_path.name)}</i>"
-        return result
-    result = f"Ответ нейронки:\n{answer}"
-    if include_ocr:
-        result += f"\n\nРаспознанный текст:\n{ocr_text}"
+    if used_vision:
+        result = f"Ответ нейронки (прочитано напрямую с изображения):\n{answer}"
+    else:
+        result = f"Ответ нейронки (по OCR):\n{answer}"
+    if include_ocr and ocr_text:
+        result += f"\n\nРаспознанный текст Tesseract:\n{ocr_text}"
     return result + f"\n\nСкриншот: {image_path.name}"
 
 
 def process_screenshot(image_path: Path, config: configparser.ConfigParser) -> None:
-    LOGGER.info("Распознаю текст: %s", image_path)
-    ocr_text = transcribe_image(image_path, config)
-    LOGGER.info("OCR завершён: %d символов", len(ocr_text))
-    answer = llm_answer(ocr_text, config)
-    send_telegram(format_telegram_message(answer, ocr_text, image_path, config), config)
-    LOGGER.info("Ответ отправлен в Telegram")
+    LOGGER.info("Обрабатываю скриншот: %s", image_path)
+    mode = vision_mode(config)
+    needs_ocr = mode == "never" or (mode == "auto" and not model_supports_vision(config))
+    ocr_text = transcribe_image(image_path, config) if needs_ocr else ""
+    if needs_ocr:
+        LOGGER.info("Использую локальный OCR fallback: %d символов", len(ocr_text))
+    answer, used_vision = llm_answer(image_path, ocr_text, config)
+    send_telegram(format_telegram_message(answer, ocr_text, image_path, config, used_vision), config)
+    LOGGER.info("Ответ отправлен в Telegram (vision=%s)", used_vision)
 
 
 class HotkeyScreenshotApp:

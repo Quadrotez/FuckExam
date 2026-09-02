@@ -4,7 +4,7 @@ hotkey = ctrl+alt+printscreen
 output_dir = screenshots
 
 [ocr]
-# Команда tesseract должна быть установлена в системе.
+# Используется только если vision отключён или недоступен.
 command = tesseract
 language = rus+eng
 psm = 6
@@ -15,16 +15,24 @@ provider = openrouter
 model = openai/gpt-4o-mini
 api_key = ВСТАВЬ_КЛЮЧ_ПРОВАЙДЕРА
 base_url =
+# auto: vision для известных vision-моделей, затем OCR fallback.
+# always: всегда отправлять исходную картинку; never: всегда использовать Tesseract.
+vision = auto
+# Дополнительные подстроки моделей с image input через запятую.
+vision_models =
 temperature = 0.2
 max_tokens = 2000
-system_prompt = Ты полезный ассистент. Проанализируй распознанный текст со скриншота и дай краткий, точный ответ на русском языке.
+system_prompt = Внимательно прочитай весь текст на изображении, включая мелкий текст и математические выражения. Сначала приведи полный распознанный текст без сокращений, затем отдельно дай точный ответ или решение.
 
 [telegram]
 bot_token = ВСТАВЬ_ТОКЕН_TELEGRAM-БОТА
 chat_id = ВСТАВЬ_CHAT_ID
-parse_mode = HTML
+# Текст отправляется обычным сообщением, чтобы OCR никогда не ломал HTML-разметку.
+parse_mode =
+include_ocr_text = true
 
 [network]
 # Оставь пустым для прямого соединения.
 # Примеры: http://127.0.0.1:8080, socks5://127.0.0.1:1080, socks5h://127.0.0.1:1080
 proxy_url =
+timeout = 60
