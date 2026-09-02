@@ -168,7 +168,12 @@ def proxy_from_config(config: configparser.ConfigParser) -> dict[str, str] | Non
 
 
 def request_kwargs(config: configparser.ConfigParser) -> dict:
-    kwargs = {"timeout": config.getint("network", "timeout", fallback=60)}
+    kwargs = {
+        "timeout": (
+            config.getint("network", "connect_timeout", fallback=10),
+            config.getint("network", "read_timeout", fallback=60),
+        )
+    }
     proxies = proxy_from_config(config)
     if proxies:
         kwargs["proxies"] = proxies
@@ -233,7 +238,13 @@ def llm_request(image_path: Path | None, text: str, config: configparser.ConfigP
         "temperature": config.getfloat("llm", "temperature", fallback=0.2),
         "max_tokens": config.getint("llm", "max_tokens", fallback=2000),
     }
-    response = requests.post(url, headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}, json=payload, **request_kwargs(config))
+    LOGGER.info("Отправляю запрос в %s: model=%s, image=%s", provider, payload["model"], image_path is not None)
+    try:
+        response = requests.post(url, headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}, json=payload, **request_kwargs(config))
+    except requests.exceptions.Timeout as error:
+        raise RuntimeError(f"Таймаут запроса к {provider}. Проверь proxy_url, connect_timeout и read_timeout.") from error
+    except requests.exceptions.RequestException as error:
+        raise RuntimeError(f"Ошибка соединения с {provider}: {error}") from error
     if not response.ok:
         raise RuntimeError(f"{provider} HTTP {response.status_code}: {response.text[:500]}")
     try:
@@ -272,7 +283,13 @@ def send_telegram(text: str, config: configparser.ConfigParser) -> None:
         payload = {"chat_id": chat_id, "text": chunk}
         if parse_mode:
             payload["parse_mode"] = parse_mode
-        response = requests.post(url, json=payload, **request_kwargs(config))
+        LOGGER.info("Отправляю сообщение в Telegram, часть %d", offset // 3900 + 1)
+        try:
+            response = requests.post(url, json=payload, **request_kwargs(config))
+        except requests.exceptions.Timeout as error:
+            raise RuntimeError("Таймаут Telegram API. Проверь proxy_url, connect_timeout и read_timeout.") from error
+        except requests.exceptions.RequestException as error:
+            raise RuntimeError(f"Ошибка соединения с Telegram: {error}") from error
         if not response.ok:
             raise RuntimeError(f"Telegram HTTP {response.status_code}: {response.text[:500]}")
 
