@@ -1,0 +1,30 @@
+[screenshot]
+# Одно сочетание клавиш; PrintScreen поддерживается как printscreen.
+hotkey = ctrl+alt+printscreen
+output_dir = screenshots
+
+[ocr]
+# Команда tesseract должна быть установлена в системе.
+command = tesseract
+language = rus+eng
+psm = 6
+
+[llm]
+# Допустимые значения: openrouter или groq.
+provider = openrouter
+model = openai/gpt-4o-mini
+api_key = ВСТАВЬ_КЛЮЧ_ПРОВАЙДЕРА
+base_url =
+temperature = 0.2
+max_tokens = 2000
+system_prompt = Ты полезный ассистент. Проанализируй распознанный текст со скриншота и дай краткий, точный ответ на русском языке.
+
+[telegram]
+bot_token = ВСТАВЬ_ТОКЕН_TELEGRAM-БОТА
+chat_id = ВСТАВЬ_CHAT_ID
+parse_mode = HTML
+
+[network]
+# Оставь пустым для прямого соединения.
+# Примеры: http://127.0.0.1:8080, socks5://127.0.0.1:1080, socks5h://127.0.0.1:1080
+proxy_url =
