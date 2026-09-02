@@ -82,6 +82,12 @@ class MainTests(unittest.TestCase):
         self.assertIn("Ответ", payload["text"])
         self.assertIn("текст со скриншота", payload["text"])
 
+    def test_markdown_is_converted_to_telegram_html(self):
+        converted = main.markdown_to_telegram_html("## Решение\n**Ответ: 42**\n```python\nprint(42)\n```")
+        self.assertNotIn("##", converted)
+        self.assertIn("<b>Ответ: 42</b>", converted)
+        self.assertIn("<pre><code>print(42)</code></pre>", converted)
+
     @patch("main.shutil.which", return_value=None)
     def test_grim_error_is_clear(self, _which):
         with self.assertRaisesRegex(RuntimeError, "Не найден grim"):

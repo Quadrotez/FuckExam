@@ -7,6 +7,7 @@ import logging
 import mimetypes
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -224,7 +225,15 @@ def llm_request(image_path: Path | None, text: str, config: configparser.ConfigP
     if not api_key or api_key.startswith("ВСТАВЬ"):
         raise RuntimeError("В config.ini не задан llm.api_key")
     url = config.get("llm", "base_url", fallback="").strip() or PROVIDER_URLS[provider]
-    system_prompt = config.get("llm", "system_prompt", fallback="Ответь по содержимому скриншота.")
+    system_prompt = config.get(
+        "llm",
+        "system_prompt",
+        fallback=(
+            "Для каждого задания выведи только решение и ответ. "
+            "Не добавляй вступление, пересказ условия, заголовки и служебные комментарии. "
+            "Решение и ответ выделяй жирным. Код оформляй в fenced code block с языком."
+        ),
+    )
     if image_path is not None:
         user_content = [
             {"type": "text", "text": "Внимательно прочитай весь текст на изображении, включая мелкий текст и математические выражения. Сначала приведи полный распознанный текст без сокращений, затем отдельно дай ответ или решение."},
@@ -277,7 +286,7 @@ def send_telegram(text: str, config: configparser.ConfigParser) -> None:
     if not token or token.startswith("ВСТАВЬ") or not chat_id or chat_id.startswith("ВСТАВЬ"):
         raise RuntimeError("В config.ini не заданы telegram.bot_token и telegram.chat_id")
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    parse_mode = config.get("telegram", "parse_mode", fallback="").strip()
+    parse_mode = config.get("telegram", "parse_mode", fallback="HTML").strip() or "HTML"
     for offset in range(0, len(text), 3900):
         chunk = text[offset:offset + 3900]
         payload = {"chat_id": chat_id, "text": chunk}
@@ -294,15 +303,41 @@ def send_telegram(text: str, config: configparser.ConfigParser) -> None:
             raise RuntimeError(f"Telegram HTTP {response.status_code}: {response.text[:500]}")
 
 
+def markdown_to_telegram_html(text: str) -> str:
+    """Convert the useful Markdown subset into Telegram-safe HTML."""
+    blocks: list[str] = []
+    fence = re.compile(r"```(?:[A-Za-z0-9_+-]+)?\s*\n?(.*?)```", re.DOTALL)
+
+    def replace_code(match: re.Match[str]) -> str:
+        blocks.append(f"<pre><code>{html.escape(match.group(1).strip(chr(10)))}</code></pre>")
+        return f"\x00CODE{len(blocks) - 1}\x00"
+
+    text = fence.sub(replace_code, text)
+    escaped = html.escape(text)
+    escaped = re.sub(r"^#{1,6}\s*", "", escaped, flags=re.MULTILINE)
+    escaped = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", escaped, flags=re.DOTALL)
+    escaped = re.sub(r"__(.+?)__", r"<b>\1</b>", escaped, flags=re.DOTALL)
+    escaped = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"<i>\1</i>", escaped)
+    escaped = re.sub(r"(?<!_)_([^_\n]+)_(?!_)", r"<i>\1</i>", escaped)
+    escaped = re.sub(r"`([^`\n]+)`", r"<code>\1</code>", escaped)
+    escaped = re.sub(r"^\s*[-*+]\s+", "• ", escaped, flags=re.MULTILINE)
+    for index, block in enumerate(blocks):
+        escaped = escaped.replace(f"\x00CODE{index}\x00", block)
+    return escaped.strip()
+
+
 def format_telegram_message(answer: str, ocr_text: str, image_path: Path, config: configparser.ConfigParser, used_vision: bool) -> str:
     include_ocr = config.getboolean("telegram", "include_ocr_text", fallback=True)
-    if used_vision:
-        result = f"Ответ нейронки (прочитано напрямую с изображения):\n{answer}"
-    else:
-        result = f"Ответ нейронки (по OCR):\n{answer}"
+    parse_mode = config.get("telegram", "parse_mode", fallback="HTML").strip().upper() or "HTML"
+    if parse_mode == "HTML":
+        result = markdown_to_telegram_html(answer)
+        if include_ocr and ocr_text:
+            result += f"\n\n<b>Распознанный текст Tesseract</b>\n<pre>{html.escape(ocr_text)}</pre>"
+        return result
+    result = answer.strip()
     if include_ocr and ocr_text:
         result += f"\n\nРаспознанный текст Tesseract:\n{ocr_text}"
-    return result + f"\n\nСкриншот: {image_path.name}"
+    return result
 
 
 def process_screenshot(image_path: Path, config: configparser.ConfigParser) -> None:
