@@ -88,6 +88,19 @@ class MainTests(unittest.TestCase):
         self.assertIn("<b>Ответ: 42</b>", converted)
         self.assertIn("<pre><code>print(42)</code></pre>", converted)
 
+    def test_extract_message_text_supports_string_and_blocks(self):
+        self.assertEqual(main.extract_message_text({"content": "  ответ  "}), "ответ")
+        self.assertEqual(main.extract_message_text({"content": [{"type": "text", "text": "а"}, {"type": "text", "text": "б"}]}), "аб")
+        self.assertEqual(main.extract_message_text({"content": None}), "")
+
+    @patch("main.requests.post")
+    def test_empty_content_has_diagnostic(self, post):
+        response = Mock(ok=True, text='{"choices":[{"message":{"content":null},"finish_reason":"stop"}]}')
+        response.json.return_value = {"choices": [{"message": {"content": None}, "finish_reason": "stop"}]}
+        post.return_value = response
+        with self.assertRaisesRegex(RuntimeError, "пустой content.*finish_reason=stop"):
+            main.llm_request(None, "текст", make_config())
+
     @patch("main.shutil.which", return_value=None)
     def test_grim_error_is_clear(self, _which):
         with self.assertRaisesRegex(RuntimeError, "Не найден grim"):

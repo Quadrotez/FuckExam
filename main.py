@@ -217,6 +217,24 @@ def image_data_url(image_path: Path) -> str:
     return f"data:{mime};base64,{encoded}"
 
 
+def extract_message_text(message: object) -> str:
+    """Extract text from common OpenAI-compatible message content shapes."""
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict) and isinstance(item.get("text"), str):
+                parts.append(item["text"])
+        return "".join(parts).strip()
+    return ""
+
+
 def llm_request(image_path: Path | None, text: str, config: configparser.ConfigParser) -> str:
     provider = config.get("llm", "provider", fallback="openrouter").strip().lower()
     if provider not in PROVIDER_URLS:
@@ -257,11 +275,18 @@ def llm_request(image_path: Path | None, text: str, config: configparser.ConfigP
     if not response.ok:
         raise RuntimeError(f"{provider} HTTP {response.status_code}: {response.text[:500]}")
     try:
-        answer = response.json()["choices"][0]["message"]["content"].strip()
-    except (KeyError, IndexError, TypeError) as error:
-        raise RuntimeError(f"Некорректный ответ от {provider}") from error
+        data = response.json()
+        choice = data["choices"][0]
+        answer = extract_message_text(choice.get("message", {}))
+    except (ValueError, KeyError, IndexError, TypeError) as error:
+        raise RuntimeError(f"Некорректный JSON-ответ от {provider}: {response.text[:500]}") from error
     if not answer:
-        raise RuntimeError(f"{provider} вернул пустой ответ")
+        finish_reason = choice.get("finish_reason", "не указан") if isinstance(choice, dict) else "не указан"
+        refusal = choice.get("message", {}).get("refusal") if isinstance(choice, dict) and isinstance(choice.get("message"), dict) else None
+        details = f"finish_reason={finish_reason}"
+        if refusal:
+            details += f", refusal={refusal}"
+        raise RuntimeError(f"{provider} вернул пустой content ({details}). Попробуй другую модель или увеличь max_tokens.")
     return answer
 
 
