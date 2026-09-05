@@ -1,6 +1,6 @@
 # FuckExam Screenshot
 
-Фоновое приложение для создания полноэкранного скриншота по глобальному хоткею, чтения изображения vision-моделью или OCR-распознавания текста, анализа содержимого через OpenRouter/Groq и отправки результата в Telegram.
+Фоновое приложение для создания полноэкранного скриншота по глобальному хоткею, чтения изображения vision-моделью или OCR-распознавания текста, анализа содержимого через AI и отправки результата в Telegram.
 
 ## Pipeline
 
@@ -18,44 +18,38 @@
 | Сеть | Прямое соединение, HTTP(S)- или SOCKS5-прокси |
 
 ## Установка
+### Windows
+```powershell
+./install.bat
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
 ```
-
-На Arch Linux для OCR установи Tesseract и языковые данные:
-
+### Linux
 ```bash
-sudo pacman -S tesseract tesseract-data-rus tesseract-data-eng
+./install.sh
 ```
 
 ## Конфигурация
-
 Рабочий `config.ini` не хранится в Git:
 
 ```bash
 cp config.ini.example config.ini
-$EDITOR config.ini
 ```
 
 Ключевые параметры:
 
 ```ini
 [llm]
-provider = openrouter
-model = openai/gpt-4o-mini
-api_key = ВСТАВЬ_КЛЮЧ_ПРОВАЙДЕРА
-# auto, always или never
-vision = auto
-# Дополнительные подстроки моделей с поддержкой изображений.
+provider = openrouter # поддерживаются: openrouter/groq
+model = openai/gpt-4o-mini 
+api_key = КЛЮЧ_ПРОВАЙДЕРА
+
+vision = auto # auto, always или never
 vision_models =
 temperature = 0.2
 max_tokens = 2000
 
 [telegram]
-bot_token = ВСТАВЬ_ТОКЕН_TELEGRAM-БОТА
+bot_token = ТОКЕН_TELEGRAM-БОТА
 chat_id = ВСТАВЬ_CHAT_ID
 # Для длинного OCR лучше оставить пустым.
 parse_mode =
@@ -80,14 +74,18 @@ read_timeout = 60
 Для OpenRouter оставь `provider = openrouter`, а для Groq используй `provider = groq`. Поле `base_url` можно не заполнять: приложение выберет стандартный endpoint провайдера. В `proxy_url` поддерживаются `http://`, `https://`, `socks5://` и `socks5h://`.
 
 ## Запуск
-
+### Windows
 ```bash
-python main.py
+./run.bat
 ```
+### Linux
+```
+./run.sh
+```
+
 
 При нажатии `Ctrl+Alt+PrintScreen` приложение сохранит снимок, передаст его vision-модели либо выполнит OCR fallback, запросит ответ и отправит в Telegram ответ вместе с полным локальным OCR-текстом, если он создавался. Для остановки нажми `Ctrl+C`.
 
-Для автоматической установки можно использовать `install.sh`/`run.sh` на Linux либо `install.bat`/`run.bat` на Windows.
 
 ## Проверка
 
@@ -98,17 +96,3 @@ python -m unittest discover -s tests -v
 ## Ограничения
 
 Глобальный перехват клавиш через `pynput` в Wayland зависит от compositor и его политики безопасности. Автоматическое определение vision основано на имени модели и может быть расширено через `vision_models`; для полной уверенности используй `vision = always`. OCR выполняется локально через Tesseract. Сетевые вызовы выполняются после создания скриншота, а повторные нажатия во время обработки пропускаются. Для диагностики используются этапные логи и конечные `connect_timeout`/`read_timeout`; бесконечного ожидания ответа быть не должно. Секреты не передаются в репозиторий: `config.ini` находится в `.gitignore`.
-
-## Быстрая установка
-
-```bash
-# Linux
-./install.sh
-./run.sh
-```
-
-```bat
-:: Windows
-install.bat
-run.bat
-```
