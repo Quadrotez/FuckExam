@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vm-guard"
+version = "0.1.0"
+description = "Safe focus-loss automation around VirtualBox VM windows"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["pynput>=1.7.6"]
+
+[project.scripts]
+vm-guard = "vm_guard.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
