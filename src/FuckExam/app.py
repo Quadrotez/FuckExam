@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+import tempfile
 from datetime import datetime
 from pathlib import Path
 import tkinter as tk
@@ -78,9 +79,37 @@ def jpeg_bytes(image: Image.Image, quality: int = 70) -> bytes:
     return buf.getvalue()
 
 
+def wayland_capture(box: tuple[int, int, int, int]) -> Image.Image | None:
+    x1, y1, x2, y2 = box
+    width, height = x2 - x1, y2 - y1
+    geometry = f"{x1},{y1} {width}x{height}"
+    if shutil.which("grim"):
+        result = subprocess.run(["grim", "-g", geometry, "-"], capture_output=True, check=False)
+        if result.returncode == 0 and result.stdout:
+            return Image.open(io.BytesIO(result.stdout)).convert("RGB")
+    for command in ("gnome-screenshot", "spectacle"):
+        if not shutil.which(command):
+            continue
+        with tempfile.NamedTemporaryFile(suffix=".png") as temp:
+            if command == "gnome-screenshot":
+                args = [command, "-f", temp.name]
+            else:
+                args = [command, "-b", "-n", "-o", temp.name]
+            result = subprocess.run(args, capture_output=True, check=False)
+            if result.returncode == 0 and Path(temp.name).exists():
+                image = Image.open(temp.name).convert("RGB")
+                return image.crop((x1, y1, min(x2, image.width), min(y2, image.height)))
+    return None
+
+
 def capture_area(box: tuple[int, int, int, int], label: str, size: tuple[int, int]) -> Image.Image:
     try:
-        image = ImageGrab.grab(bbox=box, all_screens=True)
+        if os.environ.get("WAYLAND_DISPLAY"):
+            image = wayland_capture(box)
+            if image is None:
+                raise RuntimeError("Wayland capture unavailable: install grim or a desktop screenshot tool")
+        else:
+            image = ImageGrab.grab(bbox=box, all_screens=True)
         image.thumbnail(size, Image.Resampling.LANCZOS)
         canvas = Image.new("RGB", size, "#111111")
         canvas.paste(image, ((size[0] - image.width) // 2, (size[1] - image.height) // 2))
@@ -355,8 +384,12 @@ class FuckExamApp(tk.Tk):
         self.app_box = self._field(controls, "App area x,y,width,height", "0,0,980,650")
         self.record_var = tk.BooleanVar(value=True)
         tk.Checkbutton(controls, text="Record session locally", variable=self.record_var, bg=PANEL, fg=TEXT, selectcolor=PANEL_2, activebackground=PANEL, activeforeground=TEXT).pack(anchor="w", padx=18, pady=12)
+        self.record_status = tk.Label(controls, text="Recording: ready", bg=PANEL, fg=MUTED, wraplength=230, justify="left")
+        self.record_status.pack(anchor="w", padx=18, pady=(0, 8))
         self.host_button = tk.Button(controls, text="START BROADCAST", command=self.start_host, bg=RED, fg="white", activebackground=ORANGE, relief="flat", padx=12, pady=10)
         self.host_button.pack(fill="x", padx=18, pady=(8, 18))
+        self.capture_status = tk.Label(controls, text="Capture: automatic backend", bg=PANEL, fg=MUTED, wraplength=230, justify="left")
+        self.capture_status.pack(anchor="w", padx=18, pady=(0, 8))
         tk.Label(controls, text="Viewer connects to this computer\nusing its IP and port.", bg=PANEL, fg=MUTED, justify="left").pack(anchor="w", padx=18, pady=(0, 18))
 
         right = tk.Frame(self.host_tab, bg=BG)
@@ -466,6 +499,11 @@ class FuckExamApp(tk.Tk):
                 self.recorder = None
                 messagebox.showerror("Recording unavailable", str(exc))
                 return
+            self.record_status.configure(text=f"Recording to:\n{path}", fg=GREEN)
+        else:
+            self.record_status.configure(text="Recording disabled", fg=MUTED)
+        backend = "Wayland: grim/screenshot tool" if os.environ.get("WAYLAND_DISPLAY") else "X11: Pillow ImageGrab"
+        self.capture_status.configure(text=f"Capture backend:\n{backend}", fg=ORANGE)
         self.running = True
         self.host_button.configure(text="STOP BROADCAST", bg="#7d1f1f")
         self._set_status(f"broadcasting {selected_vm}" + (f" / recording {path.name}" if self.recorder else ""))
@@ -548,6 +586,9 @@ class FuckExamApp(tk.Tk):
             self.recorder.stop()
             if self.recorder.error:
                 self._set_status(self.recorder.error)
+                self.record_status.configure(text=f"Recording error:\n{self.recorder.error}", fg=RED)
+            else:
+                self.record_status.configure(text="Recording: saved", fg=GREEN)
             self.recorder = None
         self.host_button.configure(text="START BROADCAST", bg=RED)
         self._set_status("stopped")

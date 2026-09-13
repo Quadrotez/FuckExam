@@ -16,6 +16,14 @@
 
 Для записи нужен установленный `ffmpeg`, доступный в `PATH`. Если FFmpeg отсутствует или завершается с ошибкой кодека, приложение показывает причину вместо тихого создания пустого файла.
 
+На Wayland для захвата экрана установите `grim`:
+
+```bash
+sudo pacman -S grim
+```
+
+Приложение выбирает `grim`, когда присутствует `WAYLAND_DISPLAY`; Pillow `ImageGrab` на Wayland часто не поддерживает ScreenCast portal и поэтому не используется как первый backend.
+
 Это тестовый локальный транспорт для проверки UX. Он рассчитан на одного зрителя и не заменяет production WebRTC/SFU. Для дальнейшего релиза TCP-слой можно заменить на LiveKit Cloud, Cloudflare Realtime или self-hosted LiveKit.
 
 ## Запуск из исходников
@@ -59,6 +67,12 @@ chmod +x build_appimage.sh
 ```
 
 Результат: `dist/FuckExam-x86_64.AppImage`. Скрипт использует PyInstaller и скачивает `appimagetool` только если его нет в `PATH` или `tools/`.
+
+Одной командой из корня репозитория можно синхронизировать изменения, пересобрать и запустить последнюю версию:
+
+```bash
+git pull --ff-only origin master && rm -rf AppDir build dist && ./build_appimage.sh && exec ./dist/FuckExam-x86_64.AppImage
+```
 
 ## Удалённый production-вариант
 
