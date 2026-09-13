@@ -38,5 +38,3 @@ class FocusEvent:
 class MonitorConfig:
     poll_interval: float = 0.25
     cooldown: float = 1.0
-    allow_input: bool = False
-    nudge_pixels: int = 20

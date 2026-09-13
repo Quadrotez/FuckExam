@@ -1,0 +1,482 @@
+from __future__ import annotations
+
+import io
+import json
+import queue
+import socket
+import struct
+import subprocess
+import sys
+import threading
+import time
+from datetime import datetime
+from pathlib import Path
+import tkinter as tk
+from tkinter import messagebox, ttk
+
+try:
+    from PIL import Image, ImageDraw, ImageGrab, ImageTk
+except ImportError as exc:  # pragma: no cover
+    raise RuntimeError("FuckExam requires Pillow: pip install Pillow") from exc
+
+from .storage import AppStorage
+
+BG = "#090909"
+PANEL = "#141414"
+PANEL_2 = "#1d1d1d"
+RED = "#ef3030"
+ORANGE = "#ff8a1f"
+TEXT = "#f5f5f5"
+MUTED = "#9a9a9a"
+GREEN = "#54d68b"
+HEADER = b"FEX1"
+
+
+def pack_message(payload: dict) -> bytes:
+    raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    return HEADER + struct.pack("!I", len(raw)) + raw
+
+
+def recv_exact(sock: socket.socket, size: int) -> bytes:
+    data = bytearray()
+    while len(data) < size:
+        chunk = sock.recv(size - len(data))
+        if not chunk:
+            raise ConnectionError("connection closed")
+        data.extend(chunk)
+    return bytes(data)
+
+
+def recv_message(sock: socket.socket) -> dict:
+    if recv_exact(sock, 4) != HEADER:
+        raise ConnectionError("invalid protocol header")
+    size = struct.unpack("!I", recv_exact(sock, 4))[0]
+    if size > 16 * 1024 * 1024:
+        raise ConnectionError("message too large")
+    return json.loads(recv_exact(sock, size).decode("utf-8"))
+
+
+def jpeg_bytes(image: Image.Image, quality: int = 70) -> bytes:
+    buf = io.BytesIO()
+    image.convert("RGB").save(buf, "JPEG", quality=quality, optimize=True)
+    return buf.getvalue()
+
+
+def capture_area(box: tuple[int, int, int, int], label: str, size: tuple[int, int]) -> Image.Image:
+    try:
+        image = ImageGrab.grab(bbox=box, all_screens=True)
+        image.thumbnail(size, Image.Resampling.LANCZOS)
+        canvas = Image.new("RGB", size, "#111111")
+        canvas.paste(image, ((size[0] - image.width) // 2, (size[1] - image.height) // 2))
+        return canvas
+    except Exception:
+        canvas = Image.new("RGB", size, "#181818")
+        draw = ImageDraw.Draw(canvas)
+        draw.text((24, size[1] // 2 - 12), f"{label} capture unavailable", fill=ORANGE)
+        return canvas
+
+
+def compose_frame(vm_box: tuple[int, int, int, int], app_box: tuple[int, int, int, int]) -> Image.Image:
+    width, height = 960, 540
+    left = capture_area(vm_box, "VM", (620, 480))
+    right = capture_area(app_box, "APP", (300, 480))
+    frame = Image.new("RGB", (width, height), "#080808")
+    frame.paste(left, (16, 44))
+    frame.paste(right, (644, 44))
+    draw = ImageDraw.Draw(frame)
+    draw.rectangle((0, 0, width, 35), fill="#151515")
+    draw.text((16, 10), "FUCKEXAM  /  LIVE SESSION", fill=TEXT)
+    draw.text((644, 10), "APPLICATION", fill=ORANGE)
+    draw.rectangle((0, 0, width - 1, height - 1), outline=RED, width=2)
+    draw.line((628, 40, 628, height - 16), fill=ORANGE, width=2)
+    return frame
+
+
+class HostServer:
+    def __init__(self, port: int, on_chat, on_status):
+        self.port = port
+        self.on_chat = on_chat
+        self.on_status = on_status
+        self.stop_event = threading.Event()
+        self.client: socket.socket | None = None
+        self.lock = threading.Lock()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.server: socket.socket | None = None
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def stop(self) -> None:
+        self.stop_event.set()
+        for sock in (self.client, self.server):
+            if sock:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+
+    def send_frame(self, data: bytes) -> None:
+        with self.lock:
+            if not self.client:
+                return
+            try:
+                self.client.sendall(pack_message({"type": "frame", "data": data.hex()}))
+            except OSError:
+                self.client = None
+                self.on_status("viewer disconnected")
+
+    def send_chat(self, text: str) -> None:
+        with self.lock:
+            if self.client:
+                try:
+                    self.client.sendall(pack_message({"type": "chat", "text": text, "from": "host"}))
+                except OSError:
+                    pass
+
+    def _run(self) -> None:
+        try:
+            self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.server.bind(("0.0.0.0", self.port))
+            self.server.listen(1)
+            self.server.settimeout(0.5)
+            self.on_status(f"listening on port {self.port}")
+            while not self.stop_event.is_set():
+                try:
+                    client, addr = self.server.accept()
+                except socket.timeout:
+                    continue
+                with self.lock:
+                    self.client = client
+                self.on_status(f"viewer connected: {addr[0]}")
+                try:
+                    client.settimeout(0.5)
+                    while not self.stop_event.is_set():
+                        try:
+                            message = recv_message(client)
+                        except socket.timeout:
+                            continue
+                        if message.get("type") == "chat":
+                            self.on_chat(message.get("text", ""), "viewer")
+                except (OSError, ConnectionError):
+                    pass
+                finally:
+                    with self.lock:
+                        self.client = None
+                    self.on_status("viewer disconnected")
+        except OSError as exc:
+            self.on_status(f"server error: {exc}")
+
+
+class ViewerClient:
+    def __init__(self, host: str, port: int, on_frame, on_chat, on_status):
+        self.host, self.port = host, port
+        self.on_frame, self.on_chat, self.on_status = on_frame, on_chat, on_status
+        self.sock: socket.socket | None = None
+        self.stop_event = threading.Event()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def stop(self) -> None:
+        self.stop_event.set()
+        if self.sock:
+            try:
+                self.sock.close()
+            except OSError:
+                pass
+
+    def send_chat(self, text: str) -> None:
+        if self.sock:
+            try:
+                self.sock.sendall(pack_message({"type": "chat", "text": text, "from": "viewer"}))
+            except OSError:
+                self.on_status("send failed")
+
+    def _run(self) -> None:
+        try:
+            self.sock = socket.create_connection((self.host, self.port), timeout=5)
+            self.sock.settimeout(1)
+            self.on_status("connected as viewer")
+            while not self.stop_event.is_set():
+                try:
+                    message = recv_message(self.sock)
+                except socket.timeout:
+                    continue
+                if message.get("type") == "frame":
+                    self.on_frame(bytes.fromhex(message["data"]))
+                elif message.get("type") == "chat":
+                    self.on_chat(message.get("text", ""), "host")
+        except (OSError, ConnectionError) as exc:
+            self.on_status(f"viewer connection stopped: {exc}")
+
+
+class CaptureRecorder:
+    def __init__(self, root: Path, fps: int = 8):
+        self.root = root
+        self.fps = fps
+        self.proc: subprocess.Popen | None = None
+        self.path: Path | None = None
+
+    def start(self, size=(960, 540)) -> Path:
+        folder = self.root / "recordings"
+        folder.mkdir(parents=True, exist_ok=True)
+        self.path = folder / f"session-{datetime.now():%Y%m%d-%H%M%S}.mp4"
+        try:
+            self.proc = subprocess.Popen([
+                "ffmpeg", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{size[0]}x{size[1]}",
+                "-r", str(self.fps), "-i", "-", "-an", "-c:v", "libx264", "-preset", "ultrafast",
+                "-pix_fmt", "yuv420p", str(self.path)
+            ], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except FileNotFoundError:
+            self.proc = None
+        return self.path
+
+    def write(self, image: Image.Image) -> None:
+        if self.proc and self.proc.stdin:
+            try:
+                self.proc.stdin.write(image.convert("RGB").tobytes())
+            except (BrokenPipeError, OSError):
+                self.stop()
+
+    def stop(self) -> None:
+        if self.proc:
+            if self.proc.stdin:
+                self.proc.stdin.close()
+            self.proc.wait(timeout=3)
+            self.proc = None
+
+
+class FuckExamApp(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("FuckExam — Remote VM Lab")
+        self.geometry("1180x760")
+        self.minsize(980, 650)
+        self.configure(bg=BG)
+        self.storage = AppStorage(Path.cwd() / "FuckExamData")
+        self.server: HostServer | None = None
+        self.viewer: ViewerClient | None = None
+        self.recorder: CaptureRecorder | None = None
+        self.running = False
+        self.frame_queue: queue.Queue[Image.Image] = queue.Queue(maxsize=2)
+        self.photo = None
+        self._build_ui()
+        self.protocol("WM_DELETE_WINDOW", self.close)
+        self.after(60, self._render_loop)
+
+    def _build_ui(self):
+        style = ttk.Style(self)
+        style.theme_use("clam")
+        style.configure("TLabel", background=BG, foreground=TEXT)
+        style.configure("TButton", background=PANEL_2, foreground=TEXT, padding=8)
+        style.map("TButton", background=[("active", RED)])
+        style.configure("TEntry", fieldbackground=PANEL_2, foreground=TEXT)
+        style.configure("TNotebook", background=BG, borderwidth=0)
+        style.configure("TNotebook.Tab", background=PANEL_2, foreground=TEXT, padding=(16, 8))
+
+        header = tk.Frame(self, bg=BG)
+        header.pack(fill="x", padx=24, pady=(20, 8))
+        tk.Label(header, text="FUCKEXAM", bg=BG, fg=RED, font=("Arial", 23, "bold")).pack(side="left")
+        tk.Label(header, text="  /  REMOTE VM OBSERVER", bg=BG, fg=ORANGE, font=("Arial", 11, "bold")).pack(side="left", pady=8)
+        self.status = tk.Label(header, text="LOCAL PROTOTYPE", bg=BG, fg=MUTED, font=("Arial", 10))
+        self.status.pack(side="right", pady=8)
+
+        self.tabs = ttk.Notebook(self)
+        self.tabs.pack(fill="both", expand=True, padx=20, pady=10)
+        self.host_tab = tk.Frame(self.tabs, bg=BG)
+        self.viewer_tab = tk.Frame(self.tabs, bg=BG)
+        self.tabs.add(self.host_tab, text="  HOST / VM  ")
+        self.tabs.add(self.viewer_tab, text="  VIEWER  ")
+        self._build_host()
+        self._build_viewer()
+
+    def _panel(self, parent):
+        return tk.Frame(parent, bg=PANEL, highlightbackground="#252525", highlightthickness=1)
+
+    def _build_host(self):
+        controls = self._panel(self.host_tab)
+        controls.pack(side="left", fill="y", padx=(0, 14), pady=4)
+        tk.Label(controls, text="BROADCAST CONTROL", bg=PANEL, fg=ORANGE, font=("Arial", 11, "bold")).pack(anchor="w", padx=18, pady=(18, 12))
+        self.vm_name = self._field(controls, "VM label", "Windows 11 VM")
+        self.host_port = self._field(controls, "Port", "8765")
+        self.vm_box = self._field(controls, "VM capture x,y,w,h", "0,0,1280,720")
+        self.app_box = self._field(controls, "App capture x,y,w,h", "0,0,980,650")
+        self.record_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(controls, text="Record session locally", variable=self.record_var, bg=PANEL, fg=TEXT, selectcolor=PANEL_2, activebackground=PANEL, activeforeground=TEXT).pack(anchor="w", padx=18, pady=12)
+        self.host_button = tk.Button(controls, text="START BROADCAST", command=self.start_host, bg=RED, fg="white", activebackground=ORANGE, relief="flat", padx=12, pady=10)
+        self.host_button.pack(fill="x", padx=18, pady=(8, 18))
+        tk.Label(controls, text="Viewer connects to this computer\nusing its IP and port.", bg=PANEL, fg=MUTED, justify="left").pack(anchor="w", padx=18, pady=(0, 18))
+
+        right = tk.Frame(self.host_tab, bg=BG)
+        right.pack(side="left", fill="both", expand=True)
+        self.host_preview = tk.Label(right, bg="#050505", text="Preview will appear here", fg=MUTED)
+        self.host_preview.pack(fill="both", expand=True)
+        self.host_chat = self._chat_panel(right, host=True)
+
+    def _build_viewer(self):
+        controls = self._panel(self.viewer_tab)
+        controls.pack(side="left", fill="y", padx=(0, 14), pady=4)
+        tk.Label(controls, text="VIEW SESSION", bg=PANEL, fg=ORANGE, font=("Arial", 11, "bold")).pack(anchor="w", padx=18, pady=(18, 12))
+        self.viewer_host = self._field(controls, "Host IP / hostname", "127.0.0.1")
+        self.viewer_port = self._field(controls, "Port", "8765")
+        self.viewer_button = tk.Button(controls, text="CONNECT AS VIEWER", command=self.start_viewer, bg=ORANGE, fg="black", activebackground=RED, relief="flat", padx=12, pady=10)
+        self.viewer_button.pack(fill="x", padx=18, pady=(20, 18))
+        tk.Label(controls, text="Viewer can send messages.\nHost cannot reply by design.", bg=PANEL, fg=MUTED, justify="left").pack(anchor="w", padx=18, pady=(0, 18))
+        right = tk.Frame(self.viewer_tab, bg=BG)
+        right.pack(side="left", fill="both", expand=True)
+        self.viewer_preview = tk.Label(right, bg="#050505", text="Not connected", fg=MUTED)
+        self.viewer_preview.pack(fill="both", expand=True)
+        self.viewer_chat = self._chat_panel(right, host=False)
+
+    def _field(self, parent, label, default):
+        tk.Label(parent, text=label, bg=PANEL, fg=MUTED).pack(anchor="w", padx=18, pady=(8, 3))
+        entry = tk.Entry(parent, bg=PANEL_2, fg=TEXT, insertbackground=ORANGE, relief="flat", width=25)
+        entry.insert(0, default)
+        entry.pack(anchor="w", padx=18, ipady=6)
+        return entry
+
+    def _chat_panel(self, parent, host: bool):
+        panel = tk.Frame(parent, bg=PANEL)
+        panel.pack(fill="x", pady=(10, 0))
+        title = "INCOMING CHAT (VIEWER → HOST)" if host else "CHAT TO HOST"
+        tk.Label(panel, text=title, bg=PANEL, fg=ORANGE, font=("Arial", 10, "bold")).pack(anchor="w", padx=12, pady=(8, 4))
+        chat = tk.Text(panel, height=5, bg="#0c0c0c", fg=TEXT, insertbackground=TEXT, relief="flat", state="disabled")
+        chat.pack(fill="x", padx=12)
+        row = tk.Frame(panel, bg=PANEL)
+        row.pack(fill="x", padx=12, pady=8)
+        entry = tk.Entry(row, bg=PANEL_2, fg=TEXT, insertbackground=ORANGE, relief="flat")
+        entry.pack(side="left", fill="x", expand=True, ipady=6)
+        if host:
+            entry.configure(state="disabled")
+        else:
+            tk.Button(row, text="SEND", command=lambda: self.send_viewer_chat(entry), bg=RED, fg="white", relief="flat").pack(side="right", padx=(8, 0), ipadx=8)
+        return chat
+
+    def _append_chat(self, widget, text, sender):
+        widget.configure(state="normal")
+        widget.insert("end", f"[{sender}] {text}\n")
+        widget.see("end")
+        widget.configure(state="disabled")
+
+    def _parse_box(self, entry):
+        values = [int(x.strip()) for x in entry.get().split(",")]
+        if len(values) != 4:
+            raise ValueError("capture box must be x,y,width,height")
+        return values[0], values[1], values[0] + values[2], values[1] + values[3]
+
+    def start_host(self):
+        if self.running:
+            self.stop_all()
+            return
+        try:
+            port = int(self.host_port.get())
+            self.host_vm_box = self._parse_box(self.vm_box)
+            self.host_app_box = self._parse_box(self.app_box)
+        except ValueError as exc:
+            messagebox.showerror("Invalid settings", str(exc))
+            return
+        self.server = HostServer(port, lambda text, sender: self.after(0, self._host_chat, text, sender), lambda text: self.after(0, self._set_status, text))
+        self.server.start()
+        self.recorder = CaptureRecorder(self.storage.root) if self.record_var.get() else None
+        if self.recorder:
+            path = self.recorder.start()
+            self._set_status(f"recording: {path.name}")
+        self.running = True
+        self.host_button.configure(text="STOP BROADCAST", bg="#7d1f1f")
+        self._set_status("broadcast starting")
+        self.after(100, self._capture_tick)
+
+    def _capture_tick(self):
+        if not self.running:
+            return
+        frame = compose_frame(self.host_vm_box, self.host_app_box)
+        if self.recorder:
+            self.recorder.write(frame)
+        try:
+            self.frame_queue.put_nowait(frame)
+        except queue.Full:
+            pass
+        if self.server:
+            self.server.send_frame(jpeg_bytes(frame))
+        self.after(125, self._capture_tick)
+
+    def start_viewer(self):
+        if self.viewer:
+            self.viewer.stop()
+        try:
+            port = int(self.viewer_port.get())
+        except ValueError:
+            messagebox.showerror("Invalid port", "Port must be a number")
+            return
+        self.viewer = ViewerClient(self.viewer_host.get().strip(), port, lambda data: self.after(0, self._viewer_frame, data), lambda text, sender: self.after(0, self._viewer_chat, text, sender), lambda text: self.after(0, self._set_status, text))
+        self.viewer.start()
+
+    def _viewer_frame(self, data):
+        try:
+            image = Image.open(io.BytesIO(data)).copy()
+            self._show_image(self.viewer_preview, image)
+        except Exception:
+            pass
+
+    def _render_loop(self):
+        try:
+            frame = self.frame_queue.get_nowait()
+            self._show_image(self.host_preview, frame)
+        except queue.Empty:
+            pass
+        self.after(60, self._render_loop)
+
+    def _show_image(self, widget, image):
+        width = max(widget.winfo_width(), 300)
+        height = max(widget.winfo_height(), 220)
+        image = image.copy()
+        image.thumbnail((width - 8, height - 8), Image.Resampling.LANCZOS)
+        self.photo = ImageTk.PhotoImage(image)
+        widget.configure(image=self.photo, text="")
+
+    def _host_chat(self, text, sender):
+        self._append_chat(self.host_chat, text, sender)
+        self.storage.save_message(sender, text)
+
+    def _viewer_chat(self, text, sender):
+        self._append_chat(self.viewer_chat, text, sender)
+
+    def send_viewer_chat(self, entry):
+        text = entry.get().strip()
+        if text and self.viewer:
+            self.viewer.send_chat(text)
+            self._append_chat(self.viewer_chat, text, "you")
+            entry.delete(0, "end")
+
+    def _set_status(self, text):
+        self.status.configure(text=text.upper(), fg=GREEN if "error" not in text.lower() else RED)
+
+    def stop_all(self):
+        self.running = False
+        if self.server:
+            self.server.stop()
+            self.server = None
+        if self.viewer:
+            self.viewer.stop()
+            self.viewer = None
+        if self.recorder:
+            self.recorder.stop()
+            self.recorder = None
+        self.host_button.configure(text="START BROADCAST", bg=RED)
+        self._set_status("stopped")
+
+    def close(self):
+        self.stop_all()
+        self.destroy()
+
+
+def main() -> int:
+    app = FuckExamApp()
+    app.mainloop()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

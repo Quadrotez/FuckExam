@@ -3,15 +3,15 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "vm-guard"
-version = "0.1.0"
-description = "Safe focus-loss automation around VirtualBox VM windows"
+name = "fuckexam"
+version = "0.2.0"
+description = "FuckExam desktop VM observer prototype"
 readme = "README.md"
-requires-python = ">=3.11"
-dependencies = ["virtualbox>=2.1.1"]
+requires-python = ">=3.10"
+dependencies = ["Pillow>=10.0"]
 
 [project.scripts]
-vm-guard = "FuckExam.cli:main"
+fuckexam = "FuckExam.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

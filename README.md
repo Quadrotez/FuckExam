@@ -1,182 +1,62 @@
-# VM Guard
+# FuckExam
 
-**VM Guard** — локальный desktop-инструмент для безопасной автоматизации поведения вокруг окна виртуальной машины VirtualBox. Проект подготовлен как промышленный каркас для конференции «Инженеры будущего»: сейчас в нём реализован первый MVP, а границы следующего этапа зафиксированы документально.
+Тестовая desktop-версия наблюдателя VM с GUI в чёрно-красно-оранжевой палитре.
 
-> В текущем MVP «выход из контейнера» означает потерю фокуса окна виртуальной машины на хостовой ОС. При обнаружении потери фокуса приложение отправляет небольшое движение **виртуальной мыши внутри гостя** через VirtualBox SDK. Курсор хоста не перемещается. По умолчанию включён `dry-run`, поэтому отправка ввода отключена до явного флага `--allow-input`.
+## Что есть в прототипе
 
-## Что уже работает
+- режим **HOST / VM** для запуска локальной трансляции;
+- захват области VM и области окна приложения;
+- live-превью с компоновкой «VM + APP»;
+- локальная запись через FFmpeg в `FuckExamData/recordings`;
+- режим **VIEWER** для подключения по IP и TCP-порту;
+- односторонний чат `viewer → host`;
+- SQLite база в `FuckExamData/fuckexam.sqlite3`;
+- все данные создаются в текущей директории запуска.
 
-1. При запуске приложение запрашивает идентификатор VM: имя VirtualBox, UUID или `--vm` в командной строке.
-2. Идентификатор проверяется через `VBoxManage showvminfo`.
-3. Приложение получает ожидаемый заголовок окна VM. Его можно передать через `--window-title`; если параметр не задан, используется имя VM.
-4. В фоновом цикле с настраиваемым интервалом определяется активное окно хоста.
-5. Пока окно VM активно, приложение ничего не делает.
-6. При переходе на другое окно фиксируется событие `focus_lost`, после чего запускается покачивание виртуальной мыши влево-вправо.
-7. Покачивание продолжается, пока окно VM снова не получит фокус; после `focus_gained` VirtualBox session закрывается.
-8. Все действия журналируются; чувствительных данных в лог не попадает.
+Это тестовый локальный транспорт для проверки UX. Он рассчитан на одного зрителя и не заменяет production WebRTC/SFU. Для дальнейшего релиза TCP-слой можно заменить на LiveKit Cloud, Cloudflare Realtime или self-hosted LiveKit.
 
-## Важное ограничение VirtualBox API
-
-VirtualBox API управляет жизненным циклом и внутренними устройствами гостя, но не сообщает напрямую, какое окно на рабочем столе хоста сейчас имеет фокус. Поэтому задача разделена на два слоя:
-
-| Слой | Реализация | Назначение |
-|---|---|---|
-| VirtualBox control-plane | `VBoxManage` + Python SDK | Проверка VM по имени/UUID и доступ к виртуальной мыши |
-| Host window-plane | Windows API / `xdotool` / macOS adapter | Определение активного окна VM |
-| Input action | VirtualBox SDK `IMouse.putMouseEvent` или dry-run | Движение виртуального указателя внутри гостя без изменения курсора хоста |
-
-Официальный CLI VirtualBox предоставляет `list vms`, `list runningvms`, `showvminfo`, `startvm` и `controlvm`. В SDK для более глубокой интеграции есть `IVirtualBox`, `IMachine`, `IConsole`, `IMouse` и `IEventSource`, но события VirtualBox описывают состояние и события самой VM, а не фокус окна хоста. Ссылки на первоисточники приведены в разделе [Исследование API](#исследование-api).
-
-## Быстрый запуск
-
-### Требования
-
-- Python 3.11+;
-- Oracle VirtualBox 7.x и доступная команда `VBoxManage`;
-- для реального определения активного окна:
-  - Windows: встроенный Win32 API;
-  - Linux/X11: `xdotool` или `wmctrl`;
-  - macOS: следующий адаптер проекта;
-- для реального движения в госте: VirtualBox SDK Python bindings (`vboxapi` из SDK и пакет `virtualbox`).
-
-### Установка
+## Запуск из исходников
 
 ```bash
 python -m venv .venv
 # Windows: .venv\\Scripts\\activate
 # Linux/macOS: source .venv/bin/activate
 python -m pip install -e .
-```
-
-На Arch Linux установите системную часть SDK и Python-клиент:
-
-```bash
-sudo pacman -S virtualbox-sdk xdotool
-python -m pip install -e .
-python -c "import vboxapi, virtualbox; print('VirtualBox Python SDK: OK')"
-```
-
-Важно: `virtualbox` — Python-клиент, устанавливаемый через pip, а `vboxapi` — bindings от Oracle/Arch-пакета `virtualbox-sdk`. Наличие только `VBoxManage` недостаточно для отправки мыши непосредственно в гостя.
-
-### Запуск в безопасном режиме
-
-```bash
-python -m FuckExam --vm "Windows 11"
-```
-
-Или в интерактивном режиме:
-
-```bash
 python -m FuckExam
 ```
 
-В `dry-run` приложение только пишет в лог, что движение виртуальной мыши было бы выполнено. Для разрешения реального ввода в госте:
+На машине ведущего нажмите **START BROADCAST**. На машине зрителя укажите IP ведущего и тот же порт, затем нажмите **CONNECT AS VIEWER**. Порт должен быть доступен в firewall ведущего.
+
+Поля захвата задаются как `x,y,width,height`. Для теста оставлены безопасные значения по умолчанию; их можно поменять под расположение окон.
+
+## Портативность
+
+Приложение намеренно не использует домашнюю директорию пользователя для runtime-данных. Папка `FuckExamData` создаётся рядом с местом запуска процесса. Поэтому для portable-режима нужно запускать exe/AppImage из папки, доступной для записи.
+
+## Сборка
+
+### Windows EXE
+
+В PowerShell на Windows:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+./build_exe.ps1
+```
+
+Результат: `dist/FuckExam/FuckExam.exe`. Это portable one-folder build; рядом с exe создаётся `FuckExamData`.
+
+### Linux AppImage
+
+На Linux:
 
 ```bash
-python -m FuckExam --vm "Windows 11" --allow-input
+chmod +x build_appimage.sh
+./build_appimage.sh
 ```
 
-Полезные параметры:
+Результат: `dist/FuckExam-x86_64.AppImage`. Скрипт использует PyInstaller и скачивает `appimagetool` только если его нет в `PATH` или `tools/`.
 
-```text
---vm IDENTIFIER             имя или UUID VM; если не задан, запрашивается
---window-title TEXT         точный или частичный заголовок окна VM
---poll-interval SECONDS     период проверки фокуса, по умолчанию 0.25
---nudge-pixels INTEGER      амплитуда каждого шага, по умолчанию 100
---cooldown SECONDS          защита от повторных действий, по умолчанию 1.0
---allow-input               включить движение виртуальной мыши внутри гостя
---once                      завершиться после первого focus_lost
---log-level LEVEL           DEBUG, INFO, WARNING или ERROR
-```
+## Удалённый production-вариант
 
-## Сценарий работы
-
-```text
-Ввод имени/UUID VM
-        |
-        v
-VBoxManage showvminfo ----> VM найдена и доступна?
-        |                            |
-        | нет                        | да
-        v                            v
-   понятная ошибка          WindowDetector + Monitor
-                                      |
-                       активное окно совпадает с VM?
-                              |                  |
-                             да                  нет
-                              |                  |
-                 запоминаем состояние    переход active -> inactive?
-                                                   |
-                                             да /           \
-                                          Action        ничего
-```
-
-Переход фокуса определяется по фронтенду окна хоста, а не через VirtualBox. Это позволяет заметить переключение пользователя на браузер, терминал или другое приложение. Если VM запущена в headless-режиме без окна, этот MVP намеренно завершает работу с понятной ошибкой: для headless потребуется отдельная политика идентификации клиента VRDP/RDP.
-
-## Архитектура
-
-```text
-src/FuckExam/
-├── __main__.py       CLI и точка запуска
-├── cli.py            разбор аргументов и интерактивный ввод
-├── models.py         VMInfo, WindowInfo, события и настройки
-├── virtualbox.py     безопасный subprocess-адаптер VBoxManage
-├── windows.py        определение активного окна хоста
-├── actions.py        dry-run и движение виртуальной мыши гостя
-└── monitor.py        state machine active -> focus_lost
-```
-
-Ключевые принципы:
-
-- **Без shell-интерполяции:** команды VirtualBox запускаются списком аргументов через `subprocess.run`.
-- **Fail closed:** отсутствие VM, неизвестное окно или недоступный backend не приводят к случайному вводу.
-- **Dry-run first:** реальное управление виртуальной мышью гостя всегда требует явного `--allow-input`.
-- **Идемпотность на событии:** одно движение на один переход потери фокуса, а не бесконечное движение в фоне.
-- **Наблюдаемость:** структурированные логи событий и причин завершения.
-- **Расширяемость:** интерфейсы окна и действия изолированы от VirtualBox-адаптера.
-
-## Исследование API
-
-Основные официальные источники:
-
-1. [VirtualBox User Manual — Chapter 8: VBoxManage](https://www.virtualbox.org/manual/ch08.html) — CLI является штатным интерфейсом управления VirtualBox; `list vms` возвращает зарегистрированные VM, `showvminfo` показывает сведения о VM, `controlvm` управляет запущенной VM.
-2. [IMachine SDK Reference](https://www.virtualbox.org/sdkref/interface_i_machine.html) — имя, UUID, доступность и состояние VM.
-3. [IConsole SDK Reference](https://www.virtualbox.org/sdkref/interface_i_console.html) — консоль запущенной VM, виртуальные клавиатура/мышь/дисплей и источник событий.
-4. [IEventSource SDK Reference](https://www.virtualbox.org/sdkref/interface_i_event_source.html) — активные и пассивные слушатели событий VirtualBox.
-
-### Почему VBoxManage и SDK используются вместе
-
-SDK VirtualBox требует установки соответствующих Python bindings/COM/XPCOM компонентов и отличается по платформам. `VBoxManage` уже поставляется с VirtualBox и используется как стабильный boundary для идентификации VM. Для действия ввода подключён Python SDK: `IConsole.mouse.putMouseEvent` отправляет относительные события виртуальному устройству гостя и не перемещает физический курсор хоста.
-
-### Что использовать в следующей версии
-
-- `IVirtualBox::machines` и `IMachine::name/id/state` вместо парсинга текстового CLI;
-- `IEventSource` с событиями `MachineStateChanged` и `RuntimeError` для lifecycle-реакций;
-- `IConsole::mouse` уже используется для движения **внутри гостя**, а не физического курсора хоста;
-- отдельный Win32/X11/macOS window adapter для идентификации окна по PID, заголовку и владельцу.
-
-## Проверка
-
-```bash
-python -m unittest discover -s tests -v
-```
-
-В тестах используются fake-объекты и временные каталоги; VirtualBox и физический курсор не требуются.
-
-## План развития
-
-1. Добавить GUI/Tray-интерфейс с выбором VM из `VBoxManage list vms`.
-2. Реализовать точный window identity: PID окна VirtualBox, а не только заголовок.
-3. Добавить Windows UI Automation, X11 `_NET_ACTIVE_WINDOW` и macOS Accessibility adapters.
-4. Подключить SDK adapter для lifecycle events и убрать polling там, где это возможно.
-5. Ввести policy engine: действие, cooldown, whitelist/blacklist приложений и аудит.
-6. Добавить упаковку в MSI/DMG/AppImage, code signing и автозапуск как пользовательский сервис.
-7. Добавить e2e-тесты на реальной VM в изолированном стенде.
-
-## Безопасность и эксплуатация
-
-Приложение отправляет ввод в гостевую VM, поэтому его нельзя запускать с `--allow-input` в непроверенном окружении или поверх VM, где неожиданный ввод опасен. Для демонстрации на конференции рекомендуется отдельная гостевая VM, `dry-run` на репетициях, минимальная амплитуда движения и ручная остановка через `Ctrl+C`.
-
-## Лицензия
-
-Лицензия будет выбрана до первого публичного релиза. Initial commit не объявляет юридические права на распространение.
+Текущий прототип intentionally использует простой TCP transport для локального теста. Для интернета нужен backend для комнат и токенов и WebRTC SFU; нельзя выставлять этот тестовый TCP-сервер напрямую в публичный интернет без TLS и авторизации.

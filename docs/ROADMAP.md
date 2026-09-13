@@ -1,19 +1,20 @@
-# Roadmap
+# FuckExam roadmap
 
-## MVP
+## Current prototype
 
-- VM identifier input;
-- VBoxManage validation;
-- active host-window detection;
-- focus-loss transition;
-- dry-run and opt-in mouse nudge;
-- unit tests without a real VM.
+- GUI in black/red/orange palette;
+- host and viewer modes;
+- VM/app area capture with local preview;
+- local FFmpeg recording;
+- one-viewer TCP transport for LAN testing;
+- one-way viewer-to-host chat;
+- portable runtime data in `FuckExamData`;
+- build scripts for Windows EXE and Linux AppImage.
 
-## Next milestone
+## Next steps for production
 
-- real once-mode termination;
-- tray UI;
-- precise window identity by PID/handle;
-- platform adapters for Windows, X11, Wayland and macOS;
-- SDK adapter and lifecycle events;
-- installer and signed artifacts.
+1. Replace the test TCP transport with WebRTC and an SFU provider.
+2. Add backend-issued short-lived room tokens and server-side roles.
+3. Add robust OS-specific window capture adapters and VirtualBox display capture.
+4. Add multi-viewer support, reconnection, authentication and moderation.
+5. Add signed installers, versioned migrations and end-to-end tests on Windows and Linux.
