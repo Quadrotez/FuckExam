@@ -29,6 +29,7 @@ cp AppDir/fuckexam.desktop AppDir/usr/share/applications/fuckexam.desktop
 cat > AppDir/AppRun <<'RUN'
 #!/usr/bin/env bash
 HERE="$(dirname "$(readlink -f "$0")")"
+export FUCKEXAM_PORTABLE_ROOT="$HERE"
 exec "$HERE/usr/bin/FuckExam" "$@"
 RUN
 chmod +x AppDir/AppRun

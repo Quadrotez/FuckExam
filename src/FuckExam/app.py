@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import queue
 import socket
+import shutil
 import struct
 import subprocess
 import sys
@@ -20,6 +22,7 @@ except ImportError as exc:  # pragma: no cover
     raise RuntimeError("FuckExam requires Pillow: pip install Pillow") from exc
 
 from .storage import AppStorage
+from .virtualbox import VBoxManageClient, VirtualBoxError
 
 BG = "#090909"
 PANEL = "#141414"
@@ -30,6 +33,19 @@ TEXT = "#f5f5f5"
 MUTED = "#9a9a9a"
 GREEN = "#54d68b"
 HEADER = b"FEX1"
+
+
+def runtime_root() -> Path:
+    """Return a writable portable-data location next to the launched binary."""
+    explicit_root = os.environ.get("FUCKEXAM_PORTABLE_ROOT")
+    if explicit_root:
+        return Path(explicit_root).resolve()
+    appimage = os.environ.get("APPIMAGE")
+    if appimage:
+        return Path(appimage).resolve().parent
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path.cwd()
 
 
 def pack_message(payload: dict) -> bytes:
@@ -218,34 +234,61 @@ class CaptureRecorder:
         self.fps = fps
         self.proc: subprocess.Popen | None = None
         self.path: Path | None = None
+        self.frames: queue.Queue[bytes | None] = queue.Queue(maxsize=3)
+        self.worker: threading.Thread | None = None
+        self.error: str | None = None
 
     def start(self, size=(960, 540)) -> Path:
+        if not shutil.which("ffmpeg"):
+            raise RuntimeError("FFmpeg не найден в PATH. Установите пакет ffmpeg и перезапустите приложение.")
         folder = self.root / "recordings"
         folder.mkdir(parents=True, exist_ok=True)
         self.path = folder / f"session-{datetime.now():%Y%m%d-%H%M%S}.mp4"
-        try:
-            self.proc = subprocess.Popen([
-                "ffmpeg", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{size[0]}x{size[1]}",
-                "-r", str(self.fps), "-i", "-", "-an", "-c:v", "libx264", "-preset", "ultrafast",
-                "-pix_fmt", "yuv420p", str(self.path)
-            ], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except FileNotFoundError:
-            self.proc = None
+        self.proc = subprocess.Popen([
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24",
+            "-s", f"{size[0]}x{size[1]}", "-r", str(self.fps), "-i", "-", "-an", "-c:v", "libx264",
+            "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(self.path)
+        ], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        self.worker = threading.Thread(target=self._run, name="ffmpeg-writer", daemon=True)
+        self.worker.start()
         return self.path
 
     def write(self, image: Image.Image) -> None:
-        if self.proc and self.proc.stdin:
+        if self.proc and self.proc.poll() is None:
             try:
-                self.proc.stdin.write(image.convert("RGB").tobytes())
-            except (BrokenPipeError, OSError):
-                self.stop()
+                self.frames.put_nowait(image.convert("RGB").tobytes())
+            except queue.Full:
+                pass
+
+    def _run(self) -> None:
+        try:
+            while True:
+                frame = self.frames.get()
+                if frame is None:
+                    break
+                if self.proc and self.proc.stdin:
+                    self.proc.stdin.write(frame)
+                    self.proc.stdin.flush()
+        except (BrokenPipeError, OSError) as exc:
+            self.error = f"FFmpeg остановился: {exc}"
 
     def stop(self) -> None:
         if self.proc:
-            if self.proc.stdin:
+            self.frames.put(None)
+            if self.worker:
+                self.worker.join(timeout=5)
+            if self.proc.stdin and not self.proc.stdin.closed:
                 self.proc.stdin.close()
-            self.proc.wait(timeout=3)
+            try:
+                self.proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+                self.proc.wait()
+            if self.proc.returncode and self.proc.stderr:
+                details = self.proc.stderr.read().decode("utf-8", "replace").strip()
+                self.error = details or f"FFmpeg завершился с кодом {self.proc.returncode}"
             self.proc = None
+            self.worker = None
 
 
 class FuckExamApp(tk.Tk):
@@ -255,7 +298,7 @@ class FuckExamApp(tk.Tk):
         self.geometry("1180x760")
         self.minsize(980, 650)
         self.configure(bg=BG)
-        self.storage = AppStorage(Path.cwd() / "FuckExamData")
+        self.storage = AppStorage(runtime_root() / "FuckExamData")
         self.server: HostServer | None = None
         self.viewer: ViewerClient | None = None
         self.recorder: CaptureRecorder | None = None
@@ -299,10 +342,17 @@ class FuckExamApp(tk.Tk):
         controls = self._panel(self.host_tab)
         controls.pack(side="left", fill="y", padx=(0, 14), pady=4)
         tk.Label(controls, text="BROADCAST CONTROL", bg=PANEL, fg=ORANGE, font=("Arial", 11, "bold")).pack(anchor="w", padx=18, pady=(18, 12))
-        self.vm_name = self._field(controls, "VM label", "Windows 11 VM")
+        tk.Label(controls, text="VirtualBox VM", bg=PANEL, fg=MUTED).pack(anchor="w", padx=18, pady=(8, 3))
+        vm_row = tk.Frame(controls, bg=PANEL)
+        vm_row.pack(fill="x", padx=18)
+        self.vm_name = ttk.Combobox(vm_row, state="readonly", width=22)
+        self.vm_name.pack(side="left", ipady=5)
+        tk.Button(vm_row, text="↻", command=self.refresh_vms, bg=ORANGE, fg="black", relief="flat", width=3).pack(side="left", padx=(6, 0), ipady=4)
+        self.vm_hint = tk.Label(controls, text="Loading VM list…", bg=PANEL, fg=MUTED, wraplength=230, justify="left")
+        self.vm_hint.pack(anchor="w", padx=18, pady=(4, 4))
         self.host_port = self._field(controls, "Port", "8765")
-        self.vm_box = self._field(controls, "VM capture x,y,w,h", "0,0,1280,720")
-        self.app_box = self._field(controls, "App capture x,y,w,h", "0,0,980,650")
+        self.vm_box = self._field(controls, "VM area x,y,width,height", "0,0,1280,720")
+        self.app_box = self._field(controls, "App area x,y,width,height", "0,0,980,650")
         self.record_var = tk.BooleanVar(value=True)
         tk.Checkbutton(controls, text="Record session locally", variable=self.record_var, bg=PANEL, fg=TEXT, selectcolor=PANEL_2, activebackground=PANEL, activeforeground=TEXT).pack(anchor="w", padx=18, pady=12)
         self.host_button = tk.Button(controls, text="START BROADCAST", command=self.start_host, bg=RED, fg="white", activebackground=ORANGE, relief="flat", padx=12, pady=10)
@@ -314,6 +364,30 @@ class FuckExamApp(tk.Tk):
         self.host_preview = tk.Label(right, bg="#050505", text="Preview will appear here", fg=MUTED)
         self.host_preview.pack(fill="both", expand=True)
         self.host_chat = self._chat_panel(right, host=True)
+        self.after(100, self.refresh_vms)
+
+    def refresh_vms(self):
+        self.vm_hint.configure(text="Loading VM list…", fg=MUTED)
+        def load():
+            try:
+                vms = VBoxManageClient().list_vms()
+                names = [vm.name for vm in vms]
+                self.after(0, self._set_vms, names)
+            except VirtualBoxError as exc:
+                self.after(0, self._set_vms_error, str(exc))
+        threading.Thread(target=load, name="vm-list", daemon=True).start()
+
+    def _set_vms(self, names):
+        self.vm_name["values"] = names
+        if names:
+            self.vm_name.current(0)
+            self.vm_hint.configure(text=f"Found {len(names)} VM(s). Select one to start.", fg=GREEN)
+        else:
+            self.vm_hint.configure(text="No registered VMs found.", fg=ORANGE)
+
+    def _set_vms_error(self, text):
+        self.vm_name["values"] = []
+        self.vm_hint.configure(text=text, fg=RED)
 
     def _build_viewer(self):
         controls = self._panel(self.viewer_tab)
@@ -374,6 +448,9 @@ class FuckExamApp(tk.Tk):
             port = int(self.host_port.get())
             self.host_vm_box = self._parse_box(self.vm_box)
             self.host_app_box = self._parse_box(self.app_box)
+            selected_vm = self.vm_name.get().strip()
+            if not selected_vm:
+                raise ValueError("Выберите VM из списка VirtualBox.")
         except ValueError as exc:
             messagebox.showerror("Invalid settings", str(exc))
             return
@@ -381,11 +458,17 @@ class FuckExamApp(tk.Tk):
         self.server.start()
         self.recorder = CaptureRecorder(self.storage.root) if self.record_var.get() else None
         if self.recorder:
-            path = self.recorder.start()
-            self._set_status(f"recording: {path.name}")
+            try:
+                path = self.recorder.start()
+            except RuntimeError as exc:
+                self.server.stop()
+                self.server = None
+                self.recorder = None
+                messagebox.showerror("Recording unavailable", str(exc))
+                return
         self.running = True
         self.host_button.configure(text="STOP BROADCAST", bg="#7d1f1f")
-        self._set_status("broadcast starting")
+        self._set_status(f"broadcasting {selected_vm}" + (f" / recording {path.name}" if self.recorder else ""))
         self.after(100, self._capture_tick)
 
     def _capture_tick(self):
@@ -463,6 +546,8 @@ class FuckExamApp(tk.Tk):
             self.viewer = None
         if self.recorder:
             self.recorder.stop()
+            if self.recorder.error:
+                self._set_status(self.recorder.error)
             self.recorder = None
         self.host_button.configure(text="START BROADCAST", bg=RED)
         self._set_status("stopped")
