@@ -24,6 +24,7 @@ except ImportError as exc:  # pragma: no cover
 
 from .storage import AppStorage
 from .virtualbox import VBoxManageClient, VirtualBoxError
+from .environment import detect_environment, install_missing
 
 BG = "#090909"
 PANEL = "#141414"
@@ -382,6 +383,44 @@ class FuckExamApp(tk.Tk):
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self.close)
         self.after(60, self._render_loop)
+        self.after(350, self.show_environment_check)
+
+    def show_environment_check(self):
+        report = detect_environment()
+        self.environment_report = report
+        dialog = tk.Toplevel(self)
+        dialog.title("FuckExam — first launch check")
+        dialog.geometry("700x560")
+        dialog.configure(bg=BG)
+        dialog.transient(self)
+        dialog.grab_set()
+        tk.Label(dialog, text="FIRST LAUNCH CHECK", bg=BG, fg=ORANGE, font=("Arial", 16, "bold")).pack(anchor="w", padx=22, pady=(20, 5))
+        tk.Label(dialog, text=f"{report.distro}  /  {report.desktop}  /  {report.session}  /  {report.compositor}", bg=BG, fg=MUTED, wraplength=650, justify="left").pack(anchor="w", padx=22, pady=(0, 15))
+        table = tk.Frame(dialog, bg=PANEL)
+        table.pack(fill="both", expand=True, padx=22, pady=4)
+        for component in report.components:
+            present = not component.command or shutil.which(component.command) is not None
+            color = GREEN if present else RED if component.required else ORANGE
+            state = "OK" if present else "MISSING"
+            row = tk.Frame(table, bg=PANEL)
+            row.pack(fill="x", padx=14, pady=7)
+            tk.Label(row, text=state, bg=color, fg="black", width=9, font=("Arial", 9, "bold")).pack(side="left")
+            tk.Label(row, text=f"{component.name} — {component.purpose}", bg=PANEL, fg=TEXT, anchor="w").pack(side="left", padx=12)
+        buttons = tk.Frame(dialog, bg=BG)
+        buttons.pack(fill="x", padx=22, pady=18)
+        if report.missing and report.install_command():
+            tk.Button(buttons, text="INSTALL MISSING COMPONENTS", command=lambda: self.install_environment(dialog), bg=RED, fg="white", activebackground=ORANGE, relief="flat", padx=12, pady=9).pack(side="left")
+        else:
+            tk.Label(buttons, text="All required components are available.", bg=BG, fg=GREEN).pack(side="left")
+        tk.Button(buttons, text="CLOSE", command=dialog.destroy, bg=PANEL_2, fg=TEXT, relief="flat", padx=16, pady=9).pack(side="right")
+
+    def install_environment(self, dialog):
+        report = getattr(self, "environment_report", detect_environment())
+        self._set_status("installing system components")
+        def run_install():
+            ok, message = install_missing(report)
+            self.after(0, lambda: (dialog.destroy(), messagebox.showinfo("Environment setup", message), self.show_environment_check()) if ok else messagebox.showerror("Environment setup", message))
+        threading.Thread(target=run_install, name="environment-install", daemon=True).start()
 
     def _build_ui(self):
         style = ttk.Style(self)

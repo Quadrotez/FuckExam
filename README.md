@@ -15,6 +15,8 @@
 - SQLite база в `FuckExamData/fuckexam.sqlite3`;
 - все runtime-данные создаются в portable-каталоге рядом с исполняемым файлом.
 
+При первом запуске открывается проверка окружения: дистрибутив, desktop session, Wayland/X11, compositor, VirtualBox, FFmpeg, PipeWire, WirePlumber и XDG Desktop Portal. Для Arch Linux недостающие пакеты можно установить кнопкой через `pkexec`/`sudo`. После установки проверку нужно повторить.
+
 Для записи нужен установленный `ffmpeg`, доступный в `PATH`. Если FFmpeg отсутствует или завершается с ошибкой кодека, приложение показывает причину вместо тихого создания пустого файла.
 
 На Wayland для захвата экрана установите `grim`:
@@ -81,6 +83,12 @@ chmod +x build_appimage.sh
 
 ```bash
 git pull --ff-only origin master && rm -rf AppDir build dist && ./build_appimage.sh && exec ./dist/FuckExam-x86_64.AppImage
+```
+
+Либо используйте launcher из репозитория:
+
+```bash
+./update-and-run.sh
 ```
 
 ## Удалённый production-вариант
