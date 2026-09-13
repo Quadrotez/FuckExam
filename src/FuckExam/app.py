@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
 import queue
 import socket
@@ -37,6 +38,12 @@ TEXT = "#f5f5f5"
 MUTED = "#9a9a9a"
 GREEN = "#54d68b"
 HEADER = b"FEX1"
+APP_LOGGER: logging.Logger | None = None
+
+
+def log_event(message: str, *args) -> None:
+    if APP_LOGGER:
+        APP_LOGGER.info(message, *args)
 
 
 def runtime_root() -> Path:
@@ -87,7 +94,9 @@ def wayland_capture(box: tuple[int, int, int, int]) -> Image.Image | None:
     width, height = x2 - x1, y2 - y1
     geometry = f"{x1},{y1} {width}x{height}"
     if shutil.which("grim"):
+        log_event("wayland_capture backend=grim geometry=%s", geometry)
         result = subprocess.run(["grim", "-g", geometry, "-"], capture_output=True, check=False)
+        log_event("wayland_capture grim returncode=%s bytes=%s stderr=%s", result.returncode, len(result.stdout), result.stderr.decode("utf-8", "replace").strip())
         if result.returncode == 0 and result.stdout:
             return Image.open(io.BytesIO(result.stdout)).convert("RGB")
     for command in ("gnome-screenshot", "spectacle"):
@@ -143,11 +152,21 @@ def resolve_window_box(title: str, fallback: tuple[int, int, int, int]) -> tuple
     """Resolve a live window rectangle; fallback remains available for unsupported compositors."""
     if not title.strip():
         return fallback
-    return (_window_geometry_xdotool(title) or _window_geometry_hyprland(title) or fallback)
+    geometry = _window_geometry_xdotool(title) or _window_geometry_hyprland(title)
+    if geometry:
+        log_event("window_geometry title=%r source=window-api box=%s", title, geometry)
+        return geometry
+    if os.environ.get("WAYLAND_DISPLAY"):
+        log_event("window_geometry title=%r FAILED on Wayland; refusing fallback capture", title)
+        return (0, 0, 0, 0)
+    log_event("window_geometry title=%r source=fallback box=%s WARNING=no-window-api", title, fallback)
+    return fallback
 
 
 def capture_area(box: tuple[int, int, int, int], label: str, size: tuple[int, int]) -> Image.Image:
     try:
+        if box[2] <= box[0] or box[3] <= box[1]:
+            raise RuntimeError("window geometry was not resolved")
         if os.environ.get("WAYLAND_DISPLAY"):
             image = wayland_capture(box)
             if image is None:
@@ -158,7 +177,8 @@ def capture_area(box: tuple[int, int, int, int], label: str, size: tuple[int, in
         canvas = Image.new("RGB", size, "#111111")
         canvas.paste(image, ((size[0] - image.width) // 2, (size[1] - image.height) // 2))
         return canvas
-    except Exception:
+    except Exception as exc:
+        log_event("capture_area label=%s box=%s error=%s", label, box, exc)
         canvas = Image.new("RGB", size, "#181818")
         draw = ImageDraw.Draw(canvas)
         draw.text((24, size[1] // 2 - 12), f"{label} capture unavailable", fill=ORANGE)
@@ -394,6 +414,7 @@ class NativeWaylandRecorder:
             "-portal-session-token-filepath", str(token_path), "-v", "no", "-o", str(self.path)
         ], stdout=log_handle, stderr=subprocess.STDOUT)
         log_handle.close()
+        log_event("native_recorder started pid=%s output=%s token=%s log=%s", self.proc.pid, self.path, token_path, self.log_path)
         return self.path
 
     def stop(self) -> None:
@@ -408,6 +429,9 @@ class NativeWaylandRecorder:
         if self.proc.returncode not in (0, 130, -signal.SIGINT):
             details = self.log_path.read_text(encoding="utf-8", errors="replace").strip() if self.log_path and self.log_path.exists() else ""
             self.error = details or f"gpu-screen-recorder exited with code {self.proc.returncode}"
+            log_event("native_recorder failed returncode=%s error=%s", self.proc.returncode, self.error)
+        else:
+            log_event("native_recorder stopped returncode=%s output=%s", self.proc.returncode, self.path)
         self.proc = None
 
 
@@ -418,7 +442,17 @@ class FuckExamApp(tk.Tk):
         self.geometry("1180x760")
         self.minsize(980, 650)
         self.configure(bg=BG)
-        self.storage = AppStorage(runtime_root() / "FuckExamData")
+        self.runtime_dir = runtime_root()
+        self.storage = AppStorage(self.runtime_dir / "FuckExamData")
+        global APP_LOGGER
+        APP_LOGGER = logging.getLogger("fuckexam")
+        APP_LOGGER.setLevel(logging.INFO)
+        APP_LOGGER.handlers.clear()
+        self.storage.root.mkdir(parents=True, exist_ok=True)
+        handler = logging.FileHandler(self.storage.root / "fuckexam-runtime.log", encoding="utf-8")
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        APP_LOGGER.addHandler(handler)
+        log_event("startup pid=%s cwd=%s runtime_dir=%s wayland=%s display=%s", os.getpid(), Path.cwd(), self.runtime_dir, bool(os.environ.get("WAYLAND_DISPLAY")), os.environ.get("WAYLAND_DISPLAY"))
         self.server: HostServer | None = None
         self.viewer: ViewerClient | None = None
         self.recorder: CaptureRecorder | None = None
@@ -623,6 +657,7 @@ class FuckExamApp(tk.Tk):
         self.server = HostServer(port, lambda text, sender: self.after(0, self._host_chat, text, sender), lambda text: self.after(0, self._set_status, text))
         self.server.start()
         backend = "Wayland: grim/screenshot tool" if os.environ.get("WAYLAND_DISPLAY") else "X11: Pillow ImageGrab"
+        log_event("start_session vm=%r port=%s fps=%s vm_box=%s app_box=%s app_title=%r backend=%s", selected_vm, port, fps, self.host_vm_box, self.host_app_box, self.app_title.get().strip(), backend)
         self.capture_status.configure(text=f"Capture backend:\n{backend}", fg=ORANGE)
         self.running = True
         self.capture_stop.clear()
@@ -647,6 +682,7 @@ class FuckExamApp(tk.Tk):
             if os.environ.get("WAYLAND_DISPLAY") and not NativeWaylandRecorder.available():
                 raise RuntimeError("Для Wayland нужен gpu-screen-recorder. Установите его через FIRST LAUNCH CHECK и перезапустите приложение.")
             if NativeWaylandRecorder.available():
+                log_event("native_recording start fps=%s recorder=gpu-screen-recorder portal=enabled", fps)
                 messagebox.showinfo(
                     "Wayland recording — step 1 of 2",
                     "Сейчас появится системный запрос Wayland.\n\nВыберите окно VirtualBox, содержащее запущенную VM.\nНе выбирайте весь экран и не выбирайте окно FuckExam.",
@@ -663,6 +699,7 @@ class FuckExamApp(tk.Tk):
                 self.recorder = CaptureRecorder(self.storage.root, fps=fps)
                 path_text = f"Frames: {self.recorder.start()}"
         except (RuntimeError, ValueError) as exc:
+            log_event("recording start error=%s", exc)
             self.recorder = None
             self.native_recorders = []
             messagebox.showerror("Recording unavailable", str(exc))

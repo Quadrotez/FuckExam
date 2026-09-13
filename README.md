@@ -27,6 +27,8 @@ sudo pacman -S gpu-screen-recorder
 
 Приложение использует `gpu-screen-recorder -w portal`: Wayland показывает системный диалог выбора источника, а запись идёт через xdg-desktop-portal + PipeWire. Для VM и приложения будут запрошены два источника. На Wayland приложение больше не использует тихий fallback на Pillow/grim для записи.
 
+Диагностика запуска и захвата сохраняется в `FuckExamData/fuckexam-runtime.log`. Для каждого native recorder также создаётся `FuckExamData/recordings/wayland-recorder-*.log`; в нём фиксируются PID, output MP4, portal token и ошибки `gpu-screen-recorder`. Если окно не удалось определить через API compositor, приложение теперь не подменяет его всей fallback-областью: в preview будет сообщение об ошибке, а причина попадёт в runtime-log.
+
 Для X11 установите `xdotool`, а для Hyprland Wayland нужен штатный `hyprctl`:
 
 ```bash
