@@ -24,7 +24,7 @@ except ImportError as exc:  # pragma: no cover
 
 from .storage import AppStorage
 from .virtualbox import VBoxManageClient, VirtualBoxError
-from .environment import detect_environment, install_missing
+from .environment import component_present, detect_environment, install_missing
 
 BG = "#090909"
 PANEL = "#141414"
@@ -399,7 +399,7 @@ class FuckExamApp(tk.Tk):
         table = tk.Frame(dialog, bg=PANEL)
         table.pack(fill="both", expand=True, padx=22, pady=4)
         for component in report.components:
-            present = not component.command or shutil.which(component.command) is not None
+            present = component_present(component)
             color = GREEN if present else RED if component.required else ORANGE
             state = "OK" if present else "MISSING"
             row = tk.Frame(table, bg=PANEL)

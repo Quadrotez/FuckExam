@@ -14,6 +14,7 @@ class Component:
     command: str | None
     required: bool
     purpose: str
+    package: str | None = None
 
 
 @dataclass(frozen=True)
@@ -27,7 +28,7 @@ class EnvironmentReport:
 
     @property
     def missing(self) -> tuple[Component, ...]:
-        return tuple(item for item in self.components if item.command and shutil.which(item.command) is None)
+        return tuple(item for item in self.components if not component_present(item))
 
     @property
     def has_required(self) -> bool:
@@ -37,30 +38,8 @@ class EnvironmentReport:
     def install_packages(self) -> tuple[str, ...]:
         packages: list[str] = []
         for item in self.missing:
-            if item.command == "ffmpeg":
-                packages.append("ffmpeg")
-            elif item.command == "VBoxManage":
-                packages.append("virtualbox")
-            elif item.command == "grim":
-                packages.append("grim")
-            elif item.command == "xdg-desktop-portal":
-                packages.append("xdg-desktop-portal")
-            elif item.command == "pipewire":
-                packages.append("pipewire")
-            elif item.command == "wireplumber":
-                packages.append("wireplumber")
-            elif item.command == "xdotool":
-                packages.append("xdotool")
-            elif item.command == "hyprctl":
-                continue
-            elif item.command == "xdg-desktop-portal-hyprland":
-                packages.append("xdg-desktop-portal-hyprland")
-            elif item.command == "xdg-desktop-portal-kde":
-                packages.append("xdg-desktop-portal-kde")
-            elif item.command == "xdg-desktop-portal-gnome":
-                packages.append("xdg-desktop-portal-gnome")
-            elif item.command == "xdg-desktop-portal-wlr":
-                packages.append("xdg-desktop-portal-wlr")
+            if item.package:
+                packages.append(item.package)
         return tuple(dict.fromkeys(packages))
 
     def install_command(self) -> list[str] | None:
@@ -87,6 +66,22 @@ def _read_distro() -> str:
     return values.get("PRETTY_NAME", platform.system())
 
 
+def _package_installed(package: str) -> bool:
+    if shutil.which("pacman"):
+        return subprocess.run(["pacman", "-Q", package], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False).returncode == 0
+    if shutil.which("dpkg-query"):
+        return subprocess.run(["dpkg-query", "-W", "-f=${Status}", package], capture_output=True, text=True, check=False).stdout.startswith("install ok installed")
+    return False
+
+
+def component_present(component: Component) -> bool:
+    if component.command and shutil.which(component.command):
+        return True
+    if component.package and _package_installed(component.package):
+        return True
+    return False
+
+
 def detect_environment() -> EnvironmentReport:
     session = os.environ.get("XDG_SESSION_TYPE", "unknown").lower()
     desktop = os.environ.get("XDG_CURRENT_DESKTOP", os.environ.get("DESKTOP_SESSION", "unknown"))
@@ -104,15 +99,15 @@ def detect_environment() -> EnvironmentReport:
         compositor = "unknown"
 
     components = [
-        Component("FFmpeg", "ffmpeg", True, "local MP4 recording and encoding"),
-        Component("VirtualBox", "VBoxManage", True, "VM discovery and selection"),
+        Component("FFmpeg", "ffmpeg", True, "local MP4 recording and encoding", "ffmpeg"),
+        Component("VirtualBox", "VBoxManage", True, "VM discovery and selection", "virtualbox"),
     ]
     if session == "wayland":
         components.extend([
-            Component("XDG Desktop Portal", "xdg-desktop-portal", True, "native Wayland permission dialog"),
-            Component("PipeWire", "pipewire", True, "native Wayland video stream"),
-            Component("WirePlumber", "wireplumber", True, "PipeWire session management"),
-            Component("grim", "grim", False, "fallback Wayland frame capture"),
+            Component("XDG Desktop Portal", "xdg-desktop-portal", True, "native Wayland permission dialog", "xdg-desktop-portal"),
+            Component("PipeWire", "pipewire", True, "native Wayland video stream", "pipewire"),
+            Component("WirePlumber", "wireplumber", True, "PipeWire session management", "wireplumber"),
+            Component("grim", "grim", False, "fallback Wayland frame capture", "grim"),
         ])
         backend_commands = {
             "Hyprland": "xdg-desktop-portal-hyprland",
@@ -122,7 +117,8 @@ def detect_environment() -> EnvironmentReport:
         }
         backend = backend_commands.get(compositor)
         if backend:
-            components.append(Component("Portal backend", backend, True, f"ScreenCast backend for {compositor}"))
+            package = backend
+            components.append(Component("Portal backend", backend, True, f"ScreenCast backend for {compositor}", package))
     elif session == "x11":
         components.append(Component("xdotool", "xdotool", False, "window geometry lookup"))
 
