@@ -13,6 +13,7 @@ import signal
 import threading
 import time
 import tempfile
+import uuid
 from datetime import datetime
 from pathlib import Path
 import tkinter as tk
@@ -374,6 +375,7 @@ class NativeWaylandRecorder:
         self.proc: subprocess.Popen | None = None
         self.path: Path | None = None
         self.error: str | None = None
+        self.log_path: Path | None = None
 
     @staticmethod
     def available() -> bool:
@@ -383,10 +385,15 @@ class NativeWaylandRecorder:
         folder = self.root / "recordings"
         folder.mkdir(parents=True, exist_ok=True)
         self.path = folder / f"wayland-session-{datetime.now():%Y%m%d-%H%M%S}.mp4"
+        token_path = folder / f"portal-token-{uuid.uuid4().hex}.txt"
+        self.log_path = folder / f"wayland-recorder-{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}.log"
+        log_handle = self.log_path.open("w", encoding="utf-8")
         self.proc = subprocess.Popen([
             "gpu-screen-recorder", "-w", "portal", "-f", str(self.fps), "-k", "h264",
-            "-fm", "cfr", "-o", str(self.path)
-        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            "-fm", "cfr", "-restore-portal-session", "no",
+            "-portal-session-token-filepath", str(token_path), "-v", "no", "-o", str(self.path)
+        ], stdout=log_handle, stderr=subprocess.STDOUT)
+        log_handle.close()
         return self.path
 
     def stop(self) -> None:
@@ -399,8 +406,8 @@ class NativeWaylandRecorder:
             self.proc.kill()
             self.proc.wait()
         if self.proc.returncode not in (0, 130, -signal.SIGINT):
-            stderr = self.proc.stderr.read().decode("utf-8", "replace").strip() if self.proc.stderr else ""
-            self.error = stderr or f"gpu-screen-recorder exited with code {self.proc.returncode}"
+            details = self.log_path.read_text(encoding="utf-8", errors="replace").strip() if self.log_path and self.log_path.exists() else ""
+            self.error = details or f"gpu-screen-recorder exited with code {self.proc.returncode}"
         self.proc = None
 
 
