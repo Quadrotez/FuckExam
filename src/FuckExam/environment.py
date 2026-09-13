@@ -107,6 +107,7 @@ def detect_environment() -> EnvironmentReport:
             Component("XDG Desktop Portal", "xdg-desktop-portal", True, "native Wayland permission dialog", "xdg-desktop-portal"),
             Component("PipeWire", "pipewire", True, "native Wayland video stream", "pipewire"),
             Component("WirePlumber", "wireplumber", True, "PipeWire session management", "wireplumber"),
+            Component("GPU Screen Recorder", "gpu-screen-recorder", True, "native portal recording with system indicator", "gpu-screen-recorder"),
             Component("grim", "grim", False, "fallback Wayland frame capture", "grim"),
         ])
         backend_commands = {

@@ -19,13 +19,13 @@
 
 Для записи нужен установленный `ffmpeg`, доступный в `PATH`. Если FFmpeg отсутствует или завершается с ошибкой кодека, приложение показывает причину вместо тихого создания пустого файла.
 
-На Wayland для захвата экрана установите `grim`:
+На Wayland для настоящей записи с системным уведомлением установите `gpu-screen-recorder`:
 
 ```bash
-sudo pacman -S grim
+sudo pacman -S gpu-screen-recorder
 ```
 
-Приложение выбирает `grim`, когда присутствует `WAYLAND_DISPLAY`; Pillow `ImageGrab` на Wayland часто не поддерживает ScreenCast portal и поэтому не используется как первый backend.
+Приложение использует `gpu-screen-recorder -w portal`: Wayland показывает системный диалог выбора источника, а запись идёт через xdg-desktop-portal + PipeWire. Для VM и приложения будут запрошены два источника. На Wayland приложение больше не использует тихий fallback на Pillow/grim для записи.
 
 Для X11 установите `xdotool`, а для Hyprland Wayland нужен штатный `hyprctl`:
 

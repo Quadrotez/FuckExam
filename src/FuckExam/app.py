@@ -9,6 +9,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import signal
 import threading
 import time
 import tempfile
@@ -364,6 +365,45 @@ class CaptureRecorder:
             self.worker = None
 
 
+class NativeWaylandRecorder:
+    """Native Wayland recording through xdg-desktop-portal and PipeWire."""
+
+    def __init__(self, root: Path, fps: int = 15):
+        self.root = root
+        self.fps = fps
+        self.proc: subprocess.Popen | None = None
+        self.path: Path | None = None
+        self.error: str | None = None
+
+    @staticmethod
+    def available() -> bool:
+        return bool(os.environ.get("WAYLAND_DISPLAY") and shutil.which("gpu-screen-recorder"))
+
+    def start(self) -> Path:
+        folder = self.root / "recordings"
+        folder.mkdir(parents=True, exist_ok=True)
+        self.path = folder / f"wayland-session-{datetime.now():%Y%m%d-%H%M%S}.mp4"
+        self.proc = subprocess.Popen([
+            "gpu-screen-recorder", "-w", "portal", "-f", str(self.fps), "-k", "h264",
+            "-fm", "cfr", "-o", str(self.path)
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return self.path
+
+    def stop(self) -> None:
+        if not self.proc:
+            return
+        try:
+            self.proc.send_signal(signal.SIGINT)
+            self.proc.wait(timeout=8)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+            self.proc.wait()
+        if self.proc.returncode not in (0, 130, -signal.SIGINT):
+            stderr = self.proc.stderr.read().decode("utf-8", "replace").strip() if self.proc.stderr else ""
+            self.error = stderr or f"gpu-screen-recorder exited with code {self.proc.returncode}"
+        self.proc = None
+
+
 class FuckExamApp(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -375,6 +415,7 @@ class FuckExamApp(tk.Tk):
         self.server: HostServer | None = None
         self.viewer: ViewerClient | None = None
         self.recorder: CaptureRecorder | None = None
+        self.native_recorders: list[NativeWaylandRecorder] = []
         self.running = False
         self.capture_thread: threading.Thread | None = None
         self.capture_stop = threading.Event()
@@ -598,27 +639,48 @@ class FuckExamApp(tk.Tk):
             return
         try:
             fps = max(1, min(30, int(self.host_fps.get())))
-            self.recorder = CaptureRecorder(self.storage.root, fps=fps)
-            path = self.recorder.start()
+            if os.environ.get("WAYLAND_DISPLAY") and not NativeWaylandRecorder.available():
+                raise RuntimeError("Для Wayland нужен gpu-screen-recorder. Установите его через FIRST LAUNCH CHECK и перезапустите приложение.")
+            if NativeWaylandRecorder.available():
+                vm_recorder = NativeWaylandRecorder(self.storage.root, fps=fps)
+                app_recorder = NativeWaylandRecorder(self.storage.root, fps=fps)
+                vm_path = vm_recorder.start()
+                app_path = app_recorder.start()
+                self.native_recorders = [vm_recorder, app_recorder]
+                path_text = f"VM: {vm_path}\nAPP: {app_path}\nSelect each window in the Wayland dialogs."
+            else:
+                self.recorder = CaptureRecorder(self.storage.root, fps=fps)
+                path_text = f"Frames: {self.recorder.start()}"
         except (RuntimeError, ValueError) as exc:
             self.recorder = None
+            self.native_recorders = []
             messagebox.showerror("Recording unavailable", str(exc))
             return
         self.record_button.configure(text="STOP RECORDING", bg="#7d1f1f", fg="white")
-        self.record_status.configure(text=f"Recording to:\n{path}", fg=GREEN)
-        self._set_status(f"recording at {fps} FPS")
+        self.record_status.configure(text=f"Native recording:\n{path_text}" if self.native_recorders else f"Recording to:\n{path_text}", fg=GREEN)
+        self._set_status(f"native Wayland recording at {fps} FPS" if self.native_recorders else f"recording frames at {fps} FPS")
 
     def stop_recording(self):
-        if not self.recorder:
+        if not self.recorder and not self.native_recorders:
             return
-        self.recorder.stop()
-        if self.recorder.error:
-            self.record_status.configure(text=f"Recording error:\n{self.recorder.error}", fg=RED)
-            self._set_status(self.recorder.error)
+        errors = []
+        if self.recorder:
+            self.recorder.stop()
+            if self.recorder.error:
+                errors.append(self.recorder.error)
+        for recorder in self.native_recorders:
+            recorder.stop()
+            if recorder.error:
+                errors.append(recorder.error)
+        if errors:
+            joined_errors = "\n".join(errors)
+            self.record_status.configure(text=f"Recording error:\n{joined_errors}", fg=RED)
+            self._set_status(errors[0])
         else:
             self.record_status.configure(text="Recording: saved", fg=GREEN)
             self._set_status("recording saved")
         self.recorder = None
+        self.native_recorders = []
         self.record_button.configure(text="START RECORDING", bg=ORANGE, fg="black")
 
     def _capture_loop(self, vm_title: str, app_title: str, fps: int):
