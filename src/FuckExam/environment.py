@@ -53,6 +53,14 @@ class EnvironmentReport:
                 packages.append("xdotool")
             elif item.command == "hyprctl":
                 continue
+            elif item.command == "xdg-desktop-portal-hyprland":
+                packages.append("xdg-desktop-portal-hyprland")
+            elif item.command == "xdg-desktop-portal-kde":
+                packages.append("xdg-desktop-portal-kde")
+            elif item.command == "xdg-desktop-portal-gnome":
+                packages.append("xdg-desktop-portal-gnome")
+            elif item.command == "xdg-desktop-portal-wlr":
+                packages.append("xdg-desktop-portal-wlr")
         return tuple(dict.fromkeys(packages))
 
     def install_command(self) -> list[str] | None:
@@ -106,6 +114,15 @@ def detect_environment() -> EnvironmentReport:
             Component("WirePlumber", "wireplumber", True, "PipeWire session management"),
             Component("grim", "grim", False, "fallback Wayland frame capture"),
         ])
+        backend_commands = {
+            "Hyprland": "xdg-desktop-portal-hyprland",
+            "KDE Plasma": "xdg-desktop-portal-kde",
+            "GNOME": "xdg-desktop-portal-gnome",
+            "Wayland compositor (unknown)": "xdg-desktop-portal-wlr",
+        }
+        backend = backend_commands.get(compositor)
+        if backend:
+            components.append(Component("Portal backend", backend, True, f"ScreenCast backend for {compositor}"))
     elif session == "x11":
         components.append(Component("xdotool", "xdotool", False, "window geometry lookup"))
 
