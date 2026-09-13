@@ -1,10 +1,10 @@
 import unittest
 from unittest.mock import patch
 
-from vm_guard.actions import GuestMouseNudgeAction
-from vm_guard.models import MonitorConfig, WindowInfo
-from vm_guard.monitor import FocusMonitor
-from vm_guard.virtualbox import VBoxManageClient
+from FuckExam.actions import GuestMouseNudgeAction
+from FuckExam.models import MonitorConfig, WindowInfo
+from FuckExam.monitor import FocusMonitor
+from FuckExam.virtualbox import VBoxManageClient
 
 
 class FakeWindows:

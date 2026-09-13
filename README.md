@@ -61,19 +61,19 @@ python -c "import vboxapi, virtualbox; print('VirtualBox Python SDK: OK')"
 ### Запуск в безопасном режиме
 
 ```bash
-python -m vm_guard --vm "Windows 11"
+python -m FuckExam --vm "Windows 11"
 ```
 
 Или в интерактивном режиме:
 
 ```bash
-python -m vm_guard
+python -m FuckExam
 ```
 
 В `dry-run` приложение только пишет в лог, что движение виртуальной мыши было бы выполнено. Для разрешения реального ввода в госте:
 
 ```bash
-python -m vm_guard --vm "Windows 11" --allow-input
+python -m FuckExam --vm "Windows 11" --allow-input
 ```
 
 Полезные параметры:
@@ -116,7 +116,7 @@ VBoxManage showvminfo ----> VM найдена и доступна?
 ## Архитектура
 
 ```text
-src/vm_guard/
+src/FuckExam/
 ├── __main__.py       CLI и точка запуска
 ├── cli.py            разбор аргументов и интерактивный ввод
 ├── models.py         VMInfo, WindowInfo, события и настройки
