@@ -507,6 +507,8 @@ class FuckExamApp(tk.Tk):
         self.vm_hint.pack(anchor="w", padx=18, pady=(4, 4))
         self.host_button = tk.Button(controls, text="START SESSION", command=self.start_host, bg=RED, fg="white", activebackground=ORANGE, relief="flat", padx=12, pady=9)
         self.host_button.pack(fill="x", padx=18, pady=(8, 3))
+        self.next_record_button = tk.Button(controls, text="2. SELECT FUCKEXAM WINDOW", command=self.start_second_native_recording, bg=PANEL_2, fg=MUTED, activebackground=ORANGE, relief="flat", padx=8, pady=8, state="disabled")
+        self.next_record_button.pack(fill="x", padx=18, pady=(0, 10))
         self.host_port = self._field(controls, "Port", "8765")
         self.host_fps = self._field(controls, "FPS", "15")
         self.vm_box = self._field(controls, "VM area x,y,width,height", "0,0,1280,720")
@@ -663,16 +665,14 @@ class FuckExamApp(tk.Tk):
         self.record_status.configure(text=f"Native recording:\n{path_text}" if self.native_recorders else f"Recording to:\n{path_text}", fg=GREEN)
         self._set_status(f"native Wayland recording at {fps} FPS" if self.native_recorders else f"recording frames at {fps} FPS")
         if self.native_recorders:
-            self.next_record_button = tk.Button(self.record_status.master, text="NEXT: SELECT FUCKEXAM WINDOW", command=self.start_second_native_recording, bg=ORANGE, fg="black", relief="flat", padx=8, pady=7)
-            self.next_record_button.pack(fill="x", padx=18, pady=(0, 8))
+            self.next_record_button.configure(state="normal", bg=ORANGE, fg="black")
 
     def start_second_native_recording(self):
         recorder = getattr(self, "pending_app_recorder", None)
         if not recorder or not self.running:
             return
         if self.next_record_button:
-            self.next_record_button.destroy()
-            self.next_record_button = None
+            self.next_record_button.configure(state="disabled", bg=PANEL_2, fg=MUTED)
         messagebox.showinfo(
             "Wayland recording — step 2 of 2",
             "Первое окно уже запущено.\n\nСейчас будет показан второй системный запрос Wayland.\nВыберите окно FuckExam, НЕ весь экран и НЕ окно VirtualBox.",
@@ -785,8 +785,7 @@ class FuckExamApp(tk.Tk):
         self.running = False
         self.capture_stop.set()
         if self.next_record_button:
-            self.next_record_button.destroy()
-            self.next_record_button = None
+            self.next_record_button.configure(state="disabled", bg=PANEL_2, fg=MUTED)
         self.pending_app_recorder = None
         if self.capture_thread and self.capture_thread is not threading.current_thread():
             self.capture_thread.join(timeout=3)
@@ -797,10 +796,10 @@ class FuckExamApp(tk.Tk):
         if self.viewer:
             self.viewer.stop()
             self.viewer = None
-        if self.recorder:
+        if self.recorder or self.native_recorders:
             self.stop_recording()
         self.host_button.configure(text="START SESSION", bg=RED)
-        if not self.recorder:
+        if not self.recorder and not self.native_recorders:
             self._set_status("stopped")
 
     def close(self):
