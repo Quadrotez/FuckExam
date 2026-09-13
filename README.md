@@ -6,6 +6,7 @@
 
 - режим **HOST / VM** для запуска локальной трансляции;
 - автоматический список зарегистрированных VirtualBox VM через `VBoxManage list vms`;
+- захват конкретных окон по заголовку через `xdotool` на X11 или `hyprctl` на Hyprland Wayland;
 - захват области VM и области окна приложения;
 - live-превью с компоновкой «VM + APP»;
 - локальная запись через FFmpeg в `FuckExamData/recordings`;
@@ -23,6 +24,14 @@ sudo pacman -S grim
 ```
 
 Приложение выбирает `grim`, когда присутствует `WAYLAND_DISPLAY`; Pillow `ImageGrab` на Wayland часто не поддерживает ScreenCast portal и поэтому не используется как первый backend.
+
+Для X11 установите `xdotool`, а для Hyprland Wayland нужен штатный `hyprctl`:
+
+```bash
+sudo pacman -S xdotool
+```
+
+В host-интерфейсе `App window title` по умолчанию равен `FuckExam`; у VirtualBox используется имя выбранной VM. Поиск выполняется по части заголовка, поэтому в кадр попадают именно найденные окна, а не весь экран. Если compositor не предоставляет API геометрии окон, используются указанные fallback-координаты.
 
 Это тестовый локальный транспорт для проверки UX. Он рассчитан на одного зрителя и не заменяет production WebRTC/SFU. Для дальнейшего релиза TCP-слой можно заменить на LiveKit Cloud, Cloudflare Realtime или self-hosted LiveKit.
 

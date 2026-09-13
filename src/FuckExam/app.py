@@ -102,6 +102,47 @@ def wayland_capture(box: tuple[int, int, int, int]) -> Image.Image | None:
     return None
 
 
+def _window_geometry_xdotool(title: str) -> tuple[int, int, int, int] | None:
+    if not shutil.which("xdotool"):
+        return None
+    result = subprocess.run(["xdotool", "search", "--onlyvisible", "--name", title], capture_output=True, text=True, check=False)
+    window_ids = result.stdout.splitlines()
+    if not window_ids:
+        return None
+    geometry = subprocess.run(["xdotool", "getwindowgeometry", "--shell", window_ids[-1]], capture_output=True, text=True, check=False)
+    values = {}
+    for line in geometry.stdout.splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            values[key] = int(value)
+    if all(key in values for key in ("X", "Y", "WIDTH", "HEIGHT")):
+        return values["X"], values["Y"], values["X"] + values["WIDTH"], values["Y"] + values["HEIGHT"]
+    return None
+
+
+def _window_geometry_hyprland(title: str) -> tuple[int, int, int, int] | None:
+    if not shutil.which("hyprctl"):
+        return None
+    result = subprocess.run(["hyprctl", "clients", "-j"], capture_output=True, text=True, check=False)
+    try:
+        clients = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    for client in clients:
+        if title.casefold() in str(client.get("title", "")).casefold() or title.casefold() in str(client.get("class", "")).casefold():
+            x, y = client.get("at", [0, 0])
+            width, height = client.get("size", [0, 0])
+            return int(x), int(y), int(x + width), int(y + height)
+    return None
+
+
+def resolve_window_box(title: str, fallback: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+    """Resolve a live window rectangle; fallback remains available for unsupported compositors."""
+    if not title.strip():
+        return fallback
+    return (_window_geometry_xdotool(title) or _window_geometry_hyprland(title) or fallback)
+
+
 def capture_area(box: tuple[int, int, int, int], label: str, size: tuple[int, int]) -> Image.Image:
     try:
         if os.environ.get("WAYLAND_DISPLAY"):
@@ -121,8 +162,10 @@ def capture_area(box: tuple[int, int, int, int], label: str, size: tuple[int, in
         return canvas
 
 
-def compose_frame(vm_box: tuple[int, int, int, int], app_box: tuple[int, int, int, int]) -> Image.Image:
+def compose_frame(vm_box: tuple[int, int, int, int], app_box: tuple[int, int, int, int], vm_title: str = "", app_title: str = "") -> Image.Image:
     width, height = 960, 540
+    vm_box = resolve_window_box(vm_title, vm_box)
+    app_box = resolve_window_box(app_title, app_box)
     left = capture_area(vm_box, "VM", (620, 480))
     right = capture_area(app_box, "APP", (300, 480))
     frame = Image.new("RGB", (width, height), "#080808")
@@ -258,7 +301,7 @@ class ViewerClient:
 
 
 class CaptureRecorder:
-    def __init__(self, root: Path, fps: int = 8):
+    def __init__(self, root: Path, fps: int = 15):
         self.root = root
         self.fps = fps
         self.proc: subprocess.Popen | None = None
@@ -332,6 +375,8 @@ class FuckExamApp(tk.Tk):
         self.viewer: ViewerClient | None = None
         self.recorder: CaptureRecorder | None = None
         self.running = False
+        self.capture_thread: threading.Thread | None = None
+        self.capture_stop = threading.Event()
         self.frame_queue: queue.Queue[Image.Image] = queue.Queue(maxsize=2)
         self.photo = None
         self._build_ui()
@@ -380,8 +425,10 @@ class FuckExamApp(tk.Tk):
         self.vm_hint = tk.Label(controls, text="Loading VM list…", bg=PANEL, fg=MUTED, wraplength=230, justify="left")
         self.vm_hint.pack(anchor="w", padx=18, pady=(4, 4))
         self.host_port = self._field(controls, "Port", "8765")
+        self.host_fps = self._field(controls, "FPS", "15")
         self.vm_box = self._field(controls, "VM area x,y,width,height", "0,0,1280,720")
         self.app_box = self._field(controls, "App area x,y,width,height", "0,0,980,650")
+        self.app_title = self._field(controls, "App window title", "FuckExam")
         self.record_var = tk.BooleanVar(value=True)
         tk.Checkbutton(controls, text="Record session locally", variable=self.record_var, bg=PANEL, fg=TEXT, selectcolor=PANEL_2, activebackground=PANEL, activeforeground=TEXT).pack(anchor="w", padx=18, pady=12)
         self.record_status = tk.Label(controls, text="Recording: ready", bg=PANEL, fg=MUTED, wraplength=230, justify="left")
@@ -479,6 +526,7 @@ class FuckExamApp(tk.Tk):
             return
         try:
             port = int(self.host_port.get())
+            fps = max(1, min(30, int(self.host_fps.get())))
             self.host_vm_box = self._parse_box(self.vm_box)
             self.host_app_box = self._parse_box(self.app_box)
             selected_vm = self.vm_name.get().strip()
@@ -489,7 +537,7 @@ class FuckExamApp(tk.Tk):
             return
         self.server = HostServer(port, lambda text, sender: self.after(0, self._host_chat, text, sender), lambda text: self.after(0, self._set_status, text))
         self.server.start()
-        self.recorder = CaptureRecorder(self.storage.root) if self.record_var.get() else None
+        self.recorder = CaptureRecorder(self.storage.root, fps=fps) if self.record_var.get() else None
         if self.recorder:
             try:
                 path = self.recorder.start()
@@ -505,23 +553,32 @@ class FuckExamApp(tk.Tk):
         backend = "Wayland: grim/screenshot tool" if os.environ.get("WAYLAND_DISPLAY") else "X11: Pillow ImageGrab"
         self.capture_status.configure(text=f"Capture backend:\n{backend}", fg=ORANGE)
         self.running = True
+        self.capture_stop.clear()
+        self.capture_thread = threading.Thread(target=self._capture_loop, args=(selected_vm, self.app_title.get().strip(), fps), name="screen-capture", daemon=True)
+        self.capture_thread.start()
         self.host_button.configure(text="STOP BROADCAST", bg="#7d1f1f")
-        self._set_status(f"broadcasting {selected_vm}" + (f" / recording {path.name}" if self.recorder else ""))
-        self.after(100, self._capture_tick)
+        self._set_status(f"broadcasting {selected_vm} at {fps} FPS" + (f" / recording {path.name}" if self.recorder else ""))
 
-    def _capture_tick(self):
-        if not self.running:
-            return
-        frame = compose_frame(self.host_vm_box, self.host_app_box)
-        if self.recorder:
-            self.recorder.write(frame)
-        try:
-            self.frame_queue.put_nowait(frame)
-        except queue.Full:
-            pass
-        if self.server:
-            self.server.send_frame(jpeg_bytes(frame))
-        self.after(125, self._capture_tick)
+    def _capture_loop(self, vm_title: str, app_title: str, fps: int):
+        interval = 1.0 / fps
+        last_geometry_at = 0.0
+        vm_box, app_box = self.host_vm_box, self.host_app_box
+        while self.running and not self.capture_stop.is_set():
+            started = time.monotonic()
+            if started - last_geometry_at >= 1.0:
+                vm_box = resolve_window_box(vm_title, self.host_vm_box)
+                app_box = resolve_window_box(app_title, self.host_app_box)
+                last_geometry_at = started
+            frame = compose_frame(vm_box, app_box)
+            if self.recorder:
+                self.recorder.write(frame)
+            try:
+                self.frame_queue.put_nowait(frame)
+            except queue.Full:
+                pass
+            if self.server:
+                self.server.send_frame(jpeg_bytes(frame))
+            self.capture_stop.wait(max(0.001, interval - (time.monotonic() - started)))
 
     def start_viewer(self):
         if self.viewer:
@@ -576,22 +633,29 @@ class FuckExamApp(tk.Tk):
 
     def stop_all(self):
         self.running = False
+        self.capture_stop.set()
+        if self.capture_thread and self.capture_thread is not threading.current_thread():
+            self.capture_thread.join(timeout=3)
+        self.capture_thread = None
         if self.server:
             self.server.stop()
             self.server = None
         if self.viewer:
             self.viewer.stop()
             self.viewer = None
+        record_error = None
         if self.recorder:
             self.recorder.stop()
             if self.recorder.error:
+                record_error = self.recorder.error
                 self._set_status(self.recorder.error)
                 self.record_status.configure(text=f"Recording error:\n{self.recorder.error}", fg=RED)
             else:
                 self.record_status.configure(text="Recording: saved", fg=GREEN)
             self.recorder = None
         self.host_button.configure(text="START BROADCAST", bg=RED)
-        self._set_status("stopped")
+        if not record_error:
+            self._set_status("stopped")
 
     def close(self):
         self.stop_all()
