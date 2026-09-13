@@ -420,6 +420,7 @@ class FuckExamApp(tk.Tk):
         self.capture_thread: threading.Thread | None = None
         self.capture_stop = threading.Event()
         self.next_record_button = None
+        self.native_preview_active = False
         self.frame_queue: queue.Queue[Image.Image] = queue.Queue(maxsize=2)
         self.photo = None
         self._build_ui()
@@ -643,6 +644,7 @@ class FuckExamApp(tk.Tk):
             if os.environ.get("WAYLAND_DISPLAY") and not NativeWaylandRecorder.available():
                 raise RuntimeError("Для Wayland нужен gpu-screen-recorder. Установите его через FIRST LAUNCH CHECK и перезапустите приложение.")
             if NativeWaylandRecorder.available():
+                self.native_preview_active = True
                 messagebox.showinfo(
                     "Wayland recording — step 1 of 2",
                     "Сейчас появится системный запрос Wayland.\n\nВыберите окно VirtualBox, содержащее запущенную VM.\nНе выбирайте весь экран и не выбирайте окно FuckExam.",
@@ -708,6 +710,7 @@ class FuckExamApp(tk.Tk):
         self.recorder = None
         self.native_recorders = []
         self.record_status.configure(text="Recording stopped", fg=MUTED)
+        self.native_preview_active = False
 
     def _capture_loop(self, vm_title: str, app_title: str, fps: int):
         interval = 1.0 / fps
@@ -751,7 +754,10 @@ class FuckExamApp(tk.Tk):
     def _render_loop(self):
         try:
             frame = self.frame_queue.get_nowait()
-            self._show_image(self.host_preview, frame)
+            if not self.native_preview_active:
+                self._show_image(self.host_preview, frame)
+            else:
+                self.host_preview.configure(image="", text="Native Wayland recording active\nPreview disabled to prevent recursive self-capture", fg=GREEN)
         except queue.Empty:
             pass
         self.after(60, self._render_loop)
