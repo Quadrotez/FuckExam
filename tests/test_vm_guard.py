@@ -1,5 +1,7 @@
 import unittest
+from unittest.mock import patch
 
+from vm_guard.actions import GuestMouseNudgeAction
 from vm_guard.models import MonitorConfig, WindowInfo
 from vm_guard.monitor import FocusMonitor
 from vm_guard.virtualbox import VBoxManageClient
@@ -27,6 +29,13 @@ class FocusMonitorTests(unittest.TestCase):
 
     def test_title_matching_is_case_insensitive_substring(self):
         self.assertTrue(WindowInfo("Oracle VM VirtualBox Manager").matches("virtualbox"))
+
+
+class GuestMouseActionTests(unittest.TestCase):
+    def test_dry_run_does_not_open_sdk(self):
+        with patch.object(GuestMouseNudgeAction, "_open_guest_mouse") as open_mouse:
+            GuestMouseNudgeAction("demo", allow_input=False).run()
+        open_mouse.assert_not_called()
 
 
 class VBoxParsingTests(unittest.TestCase):

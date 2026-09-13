@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import logging
 
-from .actions import MouseNudgeAction
+from .actions import GuestMouseNudgeAction
 from .models import MonitorConfig, MonitorEvent
 from .monitor import FocusMonitor
 from .virtualbox import VBoxManageClient, VirtualBoxError
@@ -38,7 +38,7 @@ def main(argv: list[str] | None = None) -> int:
         logging.info("VM найдена: name=%s uuid=%s state=%s", vm.name, vm.uuid, vm.state)
         expected_title = args.window_title or vm.name
         provider = ActiveWindowProvider()
-        action = MouseNudgeAction(args.nudge_pixels, args.allow_input)
+        action = GuestMouseNudgeAction(vm.identifier, args.nudge_pixels, args.allow_input)
         monitor = FocusMonitor(expected_title, provider, action.run, MonitorConfig(args.poll_interval, args.cooldown, args.allow_input, args.nudge_pixels))
         if args.once:
             stopped = False
