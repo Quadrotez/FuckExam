@@ -661,10 +661,16 @@ class FuckExamApp(tk.Tk):
         self.capture_status.configure(text=f"Capture backend:\n{backend}", fg=ORANGE)
         self.running = True
         self.capture_stop.clear()
-        self.capture_thread = threading.Thread(target=self._capture_loop, args=(selected_vm, self.app_title.get().strip(), fps), name="screen-capture", daemon=True)
-        self.capture_thread.start()
+        native_wayland = bool(os.environ.get("WAYLAND_DISPLAY") and NativeWaylandRecorder.available())
+        if native_wayland:
+            self.capture_status.configure(text="Capture backend:\nWayland portal — native window sources", fg=GREEN)
+            self.host_preview.configure(image="", text="Native Wayland capture\nTwo selected windows are recorded directly by PipeWire", fg=GREEN)
+            log_event("capture_loop disabled: native Wayland portal is the only source")
+        else:
+            self.capture_thread = threading.Thread(target=self._capture_loop, args=(selected_vm, self.app_title.get().strip(), fps), name="screen-capture", daemon=True)
+            self.capture_thread.start()
         self.host_button.configure(text="STOP SESSION", bg="#7d1f1f")
-        self._set_status(f"broadcasting {selected_vm} at {fps} FPS")
+        self._set_status(f"native recording session starting for {selected_vm}" if native_wayland else f"broadcasting {selected_vm} at {fps} FPS")
         self.after(250, self.start_recording)
 
     def toggle_recording(self):
