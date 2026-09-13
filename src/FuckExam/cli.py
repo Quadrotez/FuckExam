@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import logging
 
-from .actions import GuestMouseNudgeAction
+from .actions import GuestMouseOscillator
 from .models import MonitorConfig, MonitorEvent
 from .monitor import FocusMonitor
 from .virtualbox import VBoxManageClient, VirtualBoxError
@@ -15,7 +15,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--vm", dest="identifier", help="имя или UUID виртуальной машины")
     parser.add_argument("--window-title", help="подстрока заголовка окна; по умолчанию имя VM")
     parser.add_argument("--poll-interval", type=float, default=0.25)
-    parser.add_argument("--nudge-pixels", type=int, default=20)
+    parser.add_argument("--nudge-pixels", type=int, default=100, help="амплитуда каждого шага виртуальной мыши")
     parser.add_argument("--cooldown", type=float, default=1.0)
     parser.add_argument("--allow-input", action="store_true", help="разрешить реальное движение мыши")
     parser.add_argument("--once", action="store_true", help="завершиться после первого focus_lost")
@@ -38,8 +38,8 @@ def main(argv: list[str] | None = None) -> int:
         logging.info("VM найдена: name=%s uuid=%s state=%s", vm.name, vm.uuid, vm.state)
         expected_title = args.window_title or vm.name
         provider = ActiveWindowProvider()
-        action = GuestMouseNudgeAction(vm.identifier, args.nudge_pixels, args.allow_input)
-        monitor = FocusMonitor(expected_title, provider, action.run, MonitorConfig(args.poll_interval, args.cooldown, args.allow_input, args.nudge_pixels))
+        action = GuestMouseOscillator(vm.identifier, args.nudge_pixels, args.allow_input)
+        monitor = FocusMonitor(expected_title, provider, action.start, MonitorConfig(args.poll_interval, args.cooldown, args.allow_input, args.nudge_pixels), action.stop)
         if args.once:
             stopped = False
 
@@ -48,9 +48,15 @@ def main(argv: list[str] | None = None) -> int:
                 if event.kind is MonitorEvent.FOCUS_LOST:
                     stopped = True
 
-            monitor.run(lambda: stopped, stop_after_focus_lost)
+            try:
+                monitor.run(lambda: stopped, stop_after_focus_lost)
+            finally:
+                action.stop()
         else:
-            monitor.run()
+            try:
+                monitor.run()
+            finally:
+                action.stop()
     except (VirtualBoxError, WindowDetectionError, RuntimeError, KeyboardInterrupt) as exc:
         if isinstance(exc, KeyboardInterrupt):
             logging.info("остановлено пользователем")

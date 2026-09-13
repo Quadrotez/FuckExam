@@ -10,10 +10,11 @@ LOGGER = logging.getLogger(__name__)
 
 
 class FocusMonitor:
-    def __init__(self, expected_title: str, window_provider, action: Callable[[], None], config: MonitorConfig | None = None):
+    def __init__(self, expected_title: str, window_provider, action: Callable[[], None], config: MonitorConfig | None = None, stop_action: Callable[[], None] | None = None):
         self.expected_title = expected_title
         self.window_provider = window_provider
         self.action = action
+        self.stop_action = stop_action
         self.config = config or MonitorConfig()
         self._was_active: bool | None = None
         self._last_action_at = 0.0
@@ -33,6 +34,8 @@ class FocusMonitor:
                 LOGGER.info("focus_lost пропущен из-за cooldown")
         elif self._was_active is False and is_active:
             event = FocusEvent(MonitorEvent.FOCUS_GAINED, None, current)
+            if self.stop_action:
+                self.stop_action()
             LOGGER.info("focus_gained: %s", current.title or "<без заголовка>")
         self._was_active = is_active
         return event

@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from FuckExam.actions import GuestMouseNudgeAction
+from FuckExam.actions import GuestMouseOscillator
 from FuckExam.models import MonitorConfig, WindowInfo
 from FuckExam.monitor import FocusMonitor
 from FuckExam.virtualbox import VBoxManageClient
@@ -33,8 +33,8 @@ class FocusMonitorTests(unittest.TestCase):
 
 class GuestMouseActionTests(unittest.TestCase):
     def test_dry_run_does_not_open_sdk(self):
-        with patch.object(GuestMouseNudgeAction, "_open_guest_mouse") as open_mouse:
-            GuestMouseNudgeAction("demo", allow_input=False).run()
+        with patch.object(GuestMouseOscillator, "_open_guest_mouse") as open_mouse:
+            GuestMouseOscillator("demo", allow_input=False).start()
         open_mouse.assert_not_called()
 
 
