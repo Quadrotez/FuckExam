@@ -7,9 +7,9 @@ BUILD_VENV="$ROOT/.build-venv"
 if [[ ! -x "$BUILD_VENV/bin/python" ]]; then
   python3 -m venv "$BUILD_VENV"
 fi
-"$BUILD_VENV/bin/python" -m pip install --upgrade pip pyinstaller Pillow
+"$BUILD_VENV/bin/python" -m pip install --upgrade pip pyinstaller Pillow obsws-python websocket-client
 rm -rf build dist AppDir
-"$BUILD_VENV/bin/python" -m PyInstaller --noconfirm --clean --windowed --name FuckExam --paths src --collect-all PIL src/FuckExam/__main__.py
+"$BUILD_VENV/bin/python" -m PyInstaller --noconfirm --clean --windowed --name FuckExam --paths src --collect-all PIL --collect-all obsws_python --collect-all websocket src/FuckExam/__main__.py
 
 mkdir -p AppDir/usr/bin AppDir/usr/share/applications AppDir/usr/share/icons/hicolor/256x256/apps
 cp -a dist/FuckExam/. AppDir/usr/bin/

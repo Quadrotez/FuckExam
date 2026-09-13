@@ -2,7 +2,6 @@ import unittest
 
 from FuckExam.models import MonitorConfig, WindowInfo
 from FuckExam.monitor import FocusMonitor
-from FuckExam.virtualbox import VBoxManageClient
 
 
 class FakeWindows:
@@ -27,16 +26,6 @@ class FocusMonitorTests(unittest.TestCase):
 
     def test_title_matching_is_case_insensitive_substring(self):
         self.assertTrue(WindowInfo("Oracle VM VirtualBox Manager").matches("virtualbox"))
-
-
-class VBoxParsingTests(unittest.TestCase):
-    def test_show_vm_parses_machine_readable_output(self):
-        client = object.__new__(VBoxManageClient)
-        client._run = lambda *args: 'name="Demo VM"\nUUID="1234"\nVMState="running"\n'
-        vm = client.show_vm("Demo VM")
-        self.assertEqual(vm.name, "Demo VM")
-        self.assertEqual(vm.uuid, "1234")
-        self.assertEqual(vm.state, "running")
 
 
 if __name__ == "__main__":

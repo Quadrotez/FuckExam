@@ -48,7 +48,7 @@ class EnvironmentReport:
         if self.package_manager == "pacman":
             return ["pacman", "-S", "--needed", "--noconfirm", *self.install_packages]
         if self.package_manager == "apt-get":
-            package_map = {"virtualbox": "virtualbox", "grim": "grim", "xdotool": "xdotool"}
+            package_map = {"virtualbox": "virtualbox", "xdotool": "xdotool"}
             packages = [package_map.get(item, item) for item in self.install_packages]
             return ["apt-get", "install", "-y", *packages]
         return None
@@ -99,16 +99,14 @@ def detect_environment() -> EnvironmentReport:
         compositor = "unknown"
 
     components = [
-        Component("FFmpeg", "ffmpeg", True, "local MP4 recording and encoding", "ffmpeg"),
-        Component("VirtualBox", "VBoxManage", True, "VM discovery and selection", "virtualbox"),
+        Component("VirtualBox", "VBoxManage", True, "runs the exam VM (captured via OBS window capture)", "virtualbox"),
+        Component("OBS Studio", "obs", True, "cross-platform session recording", "obs-studio"),
     ]
     if session == "wayland":
         components.extend([
-            Component("XDG Desktop Portal", "xdg-desktop-portal", True, "native Wayland permission dialog", "xdg-desktop-portal"),
+            Component("XDG Desktop Portal", "xdg-desktop-portal", True, "native Wayland window permission dialog", "xdg-desktop-portal"),
             Component("PipeWire", "pipewire", True, "native Wayland video stream", "pipewire"),
             Component("WirePlumber", "wireplumber", True, "PipeWire session management", "wireplumber"),
-            Component("GPU Screen Recorder", "gpu-screen-recorder", True, "native portal recording with system indicator", "gpu-screen-recorder"),
-            Component("grim", "grim", False, "fallback Wayland frame capture", "grim"),
         ])
         backend_commands = {
             "Hyprland": "xdg-desktop-portal-hyprland",

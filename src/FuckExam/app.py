@@ -6,27 +6,19 @@ import logging
 import os
 import queue
 import socket
-import shutil
 import struct
-import subprocess
 import sys
-import signal
 import threading
 import time
-import tempfile
-import uuid
-from datetime import datetime
+import traceback
 from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-try:
-    from PIL import Image, ImageDraw, ImageGrab, ImageTk
-except ImportError as exc:  # pragma: no cover
-    raise RuntimeError("FuckExam requires Pillow: pip install Pillow") from exc
+from PIL import Image, ImageTk
 
+from .recording import OBSRecorder, OBSRecordingError
 from .storage import AppStorage
-from .virtualbox import VBoxManageClient, VirtualBoxError
 from .environment import component_present, detect_environment, install_missing
 
 BG = "#090909"
@@ -38,6 +30,7 @@ TEXT = "#f5f5f5"
 MUTED = "#9a9a9a"
 GREEN = "#54d68b"
 HEADER = b"FEX1"
+PREVIEW_FPS = 4
 APP_LOGGER: logging.Logger | None = None
 
 
@@ -48,12 +41,12 @@ def log_event(message: str, *args) -> None:
 
 def runtime_root() -> Path:
     """Return a writable portable-data location next to the launched binary."""
-    explicit_root = os.environ.get("FUCKEXAM_PORTABLE_ROOT")
-    if explicit_root:
-        return Path(explicit_root).resolve()
     appimage = os.environ.get("APPIMAGE")
     if appimage:
         return Path(appimage).resolve().parent
+    explicit_root = os.environ.get("FUCKEXAM_PORTABLE_ROOT")
+    if explicit_root:
+        return Path(explicit_root).resolve()
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return Path.cwd()
@@ -81,126 +74,6 @@ def recv_message(sock: socket.socket) -> dict:
     if size > 16 * 1024 * 1024:
         raise ConnectionError("message too large")
     return json.loads(recv_exact(sock, size).decode("utf-8"))
-
-
-def jpeg_bytes(image: Image.Image, quality: int = 70) -> bytes:
-    buf = io.BytesIO()
-    image.convert("RGB").save(buf, "JPEG", quality=quality, optimize=True)
-    return buf.getvalue()
-
-
-def wayland_capture(box: tuple[int, int, int, int]) -> Image.Image | None:
-    x1, y1, x2, y2 = box
-    width, height = x2 - x1, y2 - y1
-    geometry = f"{x1},{y1} {width}x{height}"
-    if shutil.which("grim"):
-        log_event("wayland_capture backend=grim geometry=%s", geometry)
-        result = subprocess.run(["grim", "-g", geometry, "-"], capture_output=True, check=False)
-        log_event("wayland_capture grim returncode=%s bytes=%s stderr=%s", result.returncode, len(result.stdout), result.stderr.decode("utf-8", "replace").strip())
-        if result.returncode == 0 and result.stdout:
-            return Image.open(io.BytesIO(result.stdout)).convert("RGB")
-    for command in ("gnome-screenshot", "spectacle"):
-        if not shutil.which(command):
-            continue
-        with tempfile.NamedTemporaryFile(suffix=".png") as temp:
-            if command == "gnome-screenshot":
-                args = [command, "-f", temp.name]
-            else:
-                args = [command, "-b", "-n", "-o", temp.name]
-            result = subprocess.run(args, capture_output=True, check=False)
-            if result.returncode == 0 and Path(temp.name).exists():
-                image = Image.open(temp.name).convert("RGB")
-                return image.crop((x1, y1, min(x2, image.width), min(y2, image.height)))
-    return None
-
-
-def _window_geometry_xdotool(title: str) -> tuple[int, int, int, int] | None:
-    if not shutil.which("xdotool"):
-        return None
-    result = subprocess.run(["xdotool", "search", "--onlyvisible", "--name", title], capture_output=True, text=True, check=False)
-    window_ids = result.stdout.splitlines()
-    if not window_ids:
-        return None
-    geometry = subprocess.run(["xdotool", "getwindowgeometry", "--shell", window_ids[-1]], capture_output=True, text=True, check=False)
-    values = {}
-    for line in geometry.stdout.splitlines():
-        if "=" in line:
-            key, value = line.split("=", 1)
-            values[key] = int(value)
-    if all(key in values for key in ("X", "Y", "WIDTH", "HEIGHT")):
-        return values["X"], values["Y"], values["X"] + values["WIDTH"], values["Y"] + values["HEIGHT"]
-    return None
-
-
-def _window_geometry_hyprland(title: str) -> tuple[int, int, int, int] | None:
-    if not shutil.which("hyprctl"):
-        return None
-    result = subprocess.run(["hyprctl", "clients", "-j"], capture_output=True, text=True, check=False)
-    try:
-        clients = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return None
-    for client in clients:
-        if title.casefold() in str(client.get("title", "")).casefold() or title.casefold() in str(client.get("class", "")).casefold():
-            x, y = client.get("at", [0, 0])
-            width, height = client.get("size", [0, 0])
-            return int(x), int(y), int(x + width), int(y + height)
-    return None
-
-
-def resolve_window_box(title: str, fallback: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
-    """Resolve a live window rectangle; fallback remains available for unsupported compositors."""
-    if not title.strip():
-        return fallback
-    geometry = _window_geometry_xdotool(title) or _window_geometry_hyprland(title)
-    if geometry:
-        log_event("window_geometry title=%r source=window-api box=%s", title, geometry)
-        return geometry
-    if os.environ.get("WAYLAND_DISPLAY"):
-        log_event("window_geometry title=%r FAILED on Wayland; refusing fallback capture", title)
-        return (0, 0, 0, 0)
-    log_event("window_geometry title=%r source=fallback box=%s WARNING=no-window-api", title, fallback)
-    return fallback
-
-
-def capture_area(box: tuple[int, int, int, int], label: str, size: tuple[int, int]) -> Image.Image:
-    try:
-        if box[2] <= box[0] or box[3] <= box[1]:
-            raise RuntimeError("window geometry was not resolved")
-        if os.environ.get("WAYLAND_DISPLAY"):
-            image = wayland_capture(box)
-            if image is None:
-                raise RuntimeError("Wayland capture unavailable: install grim or a desktop screenshot tool")
-        else:
-            image = ImageGrab.grab(bbox=box, all_screens=True)
-        image.thumbnail(size, Image.Resampling.LANCZOS)
-        canvas = Image.new("RGB", size, "#111111")
-        canvas.paste(image, ((size[0] - image.width) // 2, (size[1] - image.height) // 2))
-        return canvas
-    except Exception as exc:
-        log_event("capture_area label=%s box=%s error=%s", label, box, exc)
-        canvas = Image.new("RGB", size, "#181818")
-        draw = ImageDraw.Draw(canvas)
-        draw.text((24, size[1] // 2 - 12), f"{label} capture unavailable", fill=ORANGE)
-        return canvas
-
-
-def compose_frame(vm_box: tuple[int, int, int, int], app_box: tuple[int, int, int, int], vm_title: str = "", app_title: str = "") -> Image.Image:
-    width, height = 960, 540
-    vm_box = resolve_window_box(vm_title, vm_box)
-    app_box = resolve_window_box(app_title, app_box)
-    left = capture_area(vm_box, "VM", (620, 480))
-    right = capture_area(app_box, "APP", (300, 480))
-    frame = Image.new("RGB", (width, height), "#080808")
-    frame.paste(left, (16, 44))
-    frame.paste(right, (644, 44))
-    draw = ImageDraw.Draw(frame)
-    draw.rectangle((0, 0, width, 35), fill="#151515")
-    draw.text((16, 10), "FUCKEXAM  /  LIVE SESSION", fill=TEXT)
-    draw.text((644, 10), "APPLICATION", fill=ORANGE)
-    draw.rectangle((0, 0, width - 1, height - 1), outline=RED, width=2)
-    draw.line((628, 40, 628, height - 16), fill=ORANGE, width=2)
-    return frame
 
 
 class HostServer:
@@ -323,118 +196,6 @@ class ViewerClient:
             self.on_status(f"viewer connection stopped: {exc}")
 
 
-class CaptureRecorder:
-    def __init__(self, root: Path, fps: int = 15):
-        self.root = root
-        self.fps = fps
-        self.proc: subprocess.Popen | None = None
-        self.path: Path | None = None
-        self.frames: queue.Queue[bytes | None] = queue.Queue(maxsize=3)
-        self.worker: threading.Thread | None = None
-        self.error: str | None = None
-
-    def start(self, size=(960, 540)) -> Path:
-        if not shutil.which("ffmpeg"):
-            raise RuntimeError("FFmpeg не найден в PATH. Установите пакет ffmpeg и перезапустите приложение.")
-        folder = self.root / "recordings"
-        folder.mkdir(parents=True, exist_ok=True)
-        self.path = folder / f"session-{datetime.now():%Y%m%d-%H%M%S}.mp4"
-        self.proc = subprocess.Popen([
-            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24",
-            "-s", f"{size[0]}x{size[1]}", "-r", str(self.fps), "-i", "-", "-an", "-c:v", "libx264",
-            "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(self.path)
-        ], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        self.worker = threading.Thread(target=self._run, name="ffmpeg-writer", daemon=True)
-        self.worker.start()
-        return self.path
-
-    def write(self, image: Image.Image) -> None:
-        if self.proc and self.proc.poll() is None:
-            try:
-                self.frames.put_nowait(image.convert("RGB").tobytes())
-            except queue.Full:
-                pass
-
-    def _run(self) -> None:
-        try:
-            while True:
-                frame = self.frames.get()
-                if frame is None:
-                    break
-                if self.proc and self.proc.stdin:
-                    self.proc.stdin.write(frame)
-                    self.proc.stdin.flush()
-        except (BrokenPipeError, OSError) as exc:
-            self.error = f"FFmpeg остановился: {exc}"
-
-    def stop(self) -> None:
-        if self.proc:
-            self.frames.put(None)
-            if self.worker:
-                self.worker.join(timeout=5)
-            if self.proc.stdin and not self.proc.stdin.closed:
-                self.proc.stdin.close()
-            try:
-                self.proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
-                self.proc.wait()
-            if self.proc.returncode and self.proc.stderr:
-                details = self.proc.stderr.read().decode("utf-8", "replace").strip()
-                self.error = details or f"FFmpeg завершился с кодом {self.proc.returncode}"
-            self.proc = None
-            self.worker = None
-
-
-class NativeWaylandRecorder:
-    """Native Wayland recording through xdg-desktop-portal and PipeWire."""
-
-    def __init__(self, root: Path, fps: int = 15):
-        self.root = root
-        self.fps = fps
-        self.proc: subprocess.Popen | None = None
-        self.path: Path | None = None
-        self.error: str | None = None
-        self.log_path: Path | None = None
-
-    @staticmethod
-    def available() -> bool:
-        return bool(os.environ.get("WAYLAND_DISPLAY") and shutil.which("gpu-screen-recorder"))
-
-    def start(self) -> Path:
-        folder = self.root / "recordings"
-        folder.mkdir(parents=True, exist_ok=True)
-        self.path = folder / f"wayland-session-{datetime.now():%Y%m%d-%H%M%S}.mp4"
-        token_path = folder / f"portal-token-{uuid.uuid4().hex}.txt"
-        self.log_path = folder / f"wayland-recorder-{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}.log"
-        log_handle = self.log_path.open("w", encoding="utf-8")
-        self.proc = subprocess.Popen([
-            "gpu-screen-recorder", "-w", "portal", "-f", str(self.fps), "-k", "h264",
-            "-fm", "cfr", "-restore-portal-session", "no",
-            "-portal-session-token-filepath", str(token_path), "-v", "no", "-o", str(self.path)
-        ], stdout=log_handle, stderr=subprocess.STDOUT)
-        log_handle.close()
-        log_event("native_recorder started pid=%s output=%s token=%s log=%s", self.proc.pid, self.path, token_path, self.log_path)
-        return self.path
-
-    def stop(self) -> None:
-        if not self.proc:
-            return
-        try:
-            self.proc.send_signal(signal.SIGINT)
-            self.proc.wait(timeout=8)
-        except subprocess.TimeoutExpired:
-            self.proc.kill()
-            self.proc.wait()
-        if self.proc.returncode not in (0, 130, -signal.SIGINT):
-            details = self.log_path.read_text(encoding="utf-8", errors="replace").strip() if self.log_path and self.log_path.exists() else ""
-            self.error = details or f"gpu-screen-recorder exited with code {self.proc.returncode}"
-            log_event("native_recorder failed returncode=%s error=%s", self.proc.returncode, self.error)
-        else:
-            log_event("native_recorder stopped returncode=%s output=%s", self.proc.returncode, self.path)
-        self.proc = None
-
-
 class FuckExamApp(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -455,12 +216,12 @@ class FuckExamApp(tk.Tk):
         log_event("startup pid=%s cwd=%s runtime_dir=%s wayland=%s display=%s", os.getpid(), Path.cwd(), self.runtime_dir, bool(os.environ.get("WAYLAND_DISPLAY")), os.environ.get("WAYLAND_DISPLAY"))
         self.server: HostServer | None = None
         self.viewer: ViewerClient | None = None
-        self.recorder: CaptureRecorder | None = None
-        self.native_recorders: list[NativeWaylandRecorder] = []
+        self.recorder: OBSRecorder | None = None
         self.running = False
-        self.capture_thread: threading.Thread | None = None
-        self.capture_stop = threading.Event()
+        self.preview_thread: threading.Thread | None = None
+        self.preview_stop = threading.Event()
         self.frame_queue: queue.Queue[Image.Image] = queue.Queue(maxsize=2)
+        self._picker_queue: queue.Queue[tuple[str, threading.Event]] = queue.Queue()
         self.photo = None
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self.close)
@@ -537,24 +298,15 @@ class FuckExamApp(tk.Tk):
         controls = self._panel(self.host_tab)
         controls.pack(side="left", fill="y", padx=(0, 14), pady=4)
         tk.Label(controls, text="BROADCAST CONTROL", bg=PANEL, fg=ORANGE, font=("Arial", 11, "bold")).pack(anchor="w", padx=18, pady=(18, 12))
-        tk.Label(controls, text="VirtualBox VM", bg=PANEL, fg=MUTED).pack(anchor="w", padx=18, pady=(8, 3))
-        vm_row = tk.Frame(controls, bg=PANEL)
-        vm_row.pack(fill="x", padx=18)
-        self.vm_name = ttk.Combobox(vm_row, state="readonly", width=22)
-        self.vm_name.pack(side="left", ipady=5)
-        tk.Button(vm_row, text="↻", command=self.refresh_vms, bg=ORANGE, fg="black", relief="flat", width=3).pack(side="left", padx=(6, 0), ipady=4)
-        self.vm_hint = tk.Label(controls, text="Loading VM list…", bg=PANEL, fg=MUTED, wraplength=230, justify="left")
-        self.vm_hint.pack(anchor="w", padx=18, pady=(4, 4))
         self.host_button = tk.Button(controls, text="START SESSION", command=self.start_host, bg=RED, fg="white", activebackground=ORANGE, relief="flat", padx=12, pady=9)
         self.host_button.pack(fill="x", padx=18, pady=(8, 3))
         self.host_port = self._field(controls, "Port", "8765")
         self.host_fps = self._field(controls, "FPS", "15")
-        self.vm_box = self._field(controls, "VM area x,y,width,height", "0,0,1280,720")
-        self.app_box = self._field(controls, "App area x,y,width,height", "0,0,980,650")
-        self.app_title = self._field(controls, "App window title", "FuckExam")
+        self.vm_title = self._field(controls, "VM window title (X11/Windows target)", "")
+        self.app_title = self._field(controls, "App window title (X11/Windows target)", "FuckExam")
         self.record_status = tk.Label(controls, text="Recording: ready", bg=PANEL, fg=MUTED, wraplength=230, justify="left")
         self.record_status.pack(anchor="w", padx=18, pady=(0, 8))
-        self.capture_status = tk.Label(controls, text="Capture: automatic backend", bg=PANEL, fg=MUTED, wraplength=230, justify="left")
+        self.capture_status = tk.Label(controls, text="Capture: OBS Studio (websocket)", bg=PANEL, fg=MUTED, wraplength=230, justify="left")
         self.capture_status.pack(anchor="w", padx=18, pady=(0, 8))
         tk.Label(controls, text="Viewer connects to this computer\nusing its IP and port.", bg=PANEL, fg=MUTED, justify="left").pack(anchor="w", padx=18, pady=(0, 18))
 
@@ -563,30 +315,6 @@ class FuckExamApp(tk.Tk):
         self.host_preview = tk.Label(right, bg="#050505", text="Preview will appear here", fg=MUTED)
         self.host_preview.pack(fill="both", expand=True)
         self.host_chat = self._chat_panel(right, host=True)
-        self.after(100, self.refresh_vms)
-
-    def refresh_vms(self):
-        self.vm_hint.configure(text="Loading VM list…", fg=MUTED)
-        def load():
-            try:
-                vms = VBoxManageClient().list_vms()
-                names = [vm.name for vm in vms]
-                self.after(0, self._set_vms, names)
-            except VirtualBoxError as exc:
-                self.after(0, self._set_vms_error, str(exc))
-        threading.Thread(target=load, name="vm-list", daemon=True).start()
-
-    def _set_vms(self, names):
-        self.vm_name["values"] = names
-        if names:
-            self.vm_name.current(0)
-            self.vm_hint.configure(text=f"Found {len(names)} VM(s). Select one to start.", fg=GREEN)
-        else:
-            self.vm_hint.configure(text="No registered VMs found.", fg=ORANGE)
-
-    def _set_vms_error(self, text):
-        self.vm_name["values"] = []
-        self.vm_hint.configure(text=text, fg=RED)
 
     def _build_viewer(self):
         controls = self._panel(self.viewer_tab)
@@ -633,12 +361,6 @@ class FuckExamApp(tk.Tk):
         widget.see("end")
         widget.configure(state="disabled")
 
-    def _parse_box(self, entry):
-        values = [int(x.strip()) for x in entry.get().split(",")]
-        if len(values) != 4:
-            raise ValueError("capture box must be x,y,width,height")
-        return values[0], values[1], values[0] + values[2], values[1] + values[3]
-
     def start_host(self):
         if self.running:
             self.stop_all()
@@ -646,152 +368,145 @@ class FuckExamApp(tk.Tk):
         try:
             port = int(self.host_port.get())
             fps = max(1, min(30, int(self.host_fps.get())))
-            self.host_vm_box = self._parse_box(self.vm_box)
-            self.host_app_box = self._parse_box(self.app_box)
-            selected_vm = self.vm_name.get().strip()
-            if not selected_vm:
-                raise ValueError("Выберите VM из списка VirtualBox.")
-        except ValueError as exc:
+            if not OBSRecorder.available():
+                raise RuntimeError("OBS Studio не найден. Установите OBS через FIRST LAUNCH CHECK и перезапустите приложение.")
+        except (ValueError, RuntimeError) as exc:
             messagebox.showerror("Invalid settings", str(exc))
             return
-        self.server = HostServer(port, lambda text, sender: self.after(0, self._host_chat, text, sender), lambda text: self.after(0, self._set_status, text))
-        self.server.start()
-        backend = "Wayland: grim/screenshot tool" if os.environ.get("WAYLAND_DISPLAY") else "X11: Pillow ImageGrab"
-        log_event("start_session vm=%r port=%s fps=%s vm_box=%s app_box=%s app_title=%r backend=%s", selected_vm, port, fps, self.host_vm_box, self.host_app_box, self.app_title.get().strip(), backend)
+        if not self.recorder or not self.recorder.recording:
+            self.recorder = OBSRecorder(self.storage.root, fps=fps)
+        vm_title = self.vm_title.get().strip()
+        app_title = self.app_title.get().strip()
+        backend = "OBS Studio (websocket)"
+        log_event("start_session port=%s fps=%s vm_title=%r app_title=%r recording=obs %s", port, fps, vm_title, app_title, "wayland-portal" if os.environ.get("WAYLAND_DISPLAY") else "native-window-capture")
         self.capture_status.configure(text=f"Capture backend:\n{backend}", fg=ORANGE)
         self.running = True
-        self.capture_stop.clear()
-        native_wayland = bool(os.environ.get("WAYLAND_DISPLAY") and NativeWaylandRecorder.available())
-        if native_wayland:
-            self.capture_status.configure(text="Capture backend:\nWayland portal — native window sources", fg=GREEN)
-            self.host_preview.configure(image="", text="Native Wayland capture\nTwo selected windows are recorded directly by PipeWire", fg=GREEN)
-            log_event("capture_loop disabled: native Wayland portal is the only source")
+        self.preview_stop.clear()
+        if os.environ.get("WAYLAND_DISPLAY"):
+            self.capture_status.configure(text="Capture backend:\nOBS + Wayland portal — native windows", fg=GREEN)
+            log_event("preview via OBS scene snapshots (Wayland portal)")
         else:
-            self.capture_thread = threading.Thread(target=self._capture_loop, args=(selected_vm, self.app_title.get().strip(), fps), name="screen-capture", daemon=True)
-            self.capture_thread.start()
+            log_event("preview via OBS scene snapshots (window capture)")
+        self.host_preview.configure(image="", text="Starting live preview…", fg=GREEN)
+        self.preview_thread = threading.Thread(target=self._obs_preview_loop, name="obs-preview", daemon=True)
+        self.preview_thread.start()
+        self.server = HostServer(port, lambda text, sender: self.after(0, self._host_chat, text, sender), lambda text: self.after(0, self._set_status, text))
+        self.server.start()
         self.host_button.configure(text="STOP SESSION", bg="#7d1f1f")
-        self._set_status(f"native recording session starting for {selected_vm}" if native_wayland else f"broadcasting {selected_vm} at {fps} FPS")
+        self.record_status.configure(text="Recording: starting OBS session…", fg=ORANGE)
+        self._set_status("starting session (OBS recording)")
         self.after(250, self.start_recording)
 
     def toggle_recording(self):
-        if self.recorder:
+        if self.recorder and self.recorder.recording:
             self.stop_recording()
         else:
             self.start_recording()
+
+    def _picker_dialog(self, text: str):
+        done = threading.Event()
+        self._picker_queue.put((text, done))
+        while self.running and not done.is_set():
+            done.wait(0.2)
+        return done
+
+    def _process_picker_queue(self):
+        try:
+            text, done = self._picker_queue.get_nowait()
+        except queue.Empty:
+            return
+        messagebox.showinfo("FuckExam — window picker", text)
+        done.set()
 
     def start_recording(self):
         if not self.running:
             messagebox.showinfo("Start broadcast first", "Сначала запустите трансляцию, затем запись.")
             return
-        try:
-            fps = max(1, min(30, int(self.host_fps.get())))
-            if os.environ.get("WAYLAND_DISPLAY") and not NativeWaylandRecorder.available():
-                raise RuntimeError("Для Wayland нужен gpu-screen-recorder. Установите его через FIRST LAUNCH CHECK и перезапустите приложение.")
-            if NativeWaylandRecorder.available():
-                log_event("native_recording start fps=%s recorder=gpu-screen-recorder portal=enabled", fps)
-                messagebox.showinfo(
-                    "Wayland recording — step 1 of 2",
-                    "Сейчас появится системный запрос Wayland.\n\nВыберите окно VirtualBox, содержащее запущенную VM.\nНе выбирайте весь экран и не выбирайте окно FuckExam.",
-                )
-                vm_recorder = NativeWaylandRecorder(self.storage.root, fps=fps)
-                app_recorder = NativeWaylandRecorder(self.storage.root, fps=fps)
-                vm_path = vm_recorder.start()
-                self.native_recorders = [vm_recorder]
-                self.pending_app_recorder = app_recorder
-                self.pending_app_fps = fps
-                self.portal_wait_started = time.monotonic()
-                path_text = f"VM: {vm_path}\nChoose the VirtualBox window in the Wayland dialog.\nNext: FuckExam window."
-            else:
-                self.recorder = CaptureRecorder(self.storage.root, fps=fps)
-                path_text = f"Frames: {self.recorder.start()}"
-        except (RuntimeError, ValueError) as exc:
-            log_event("recording start error=%s", exc)
-            self.recorder = None
-            self.native_recorders = []
-            messagebox.showerror("Recording unavailable", str(exc))
+        if self.recorder and self.recorder.recording:
             return
-        self.record_status.configure(text=f"Native recording:\n{path_text}" if self.native_recorders else f"Recording to:\n{path_text}", fg=GREEN)
-        self._set_status(f"native Wayland recording at {fps} FPS" if self.native_recorders else f"recording frames at {fps} FPS")
-        if self.native_recorders:
-            self.after(500, self._wait_for_first_portal)
+        if not self.recorder:
+            try:
+                fps = max(1, min(30, int(self.host_fps.get())))
+            except ValueError:
+                fps = 15
+            self.recorder = OBSRecorder(self.storage.root, fps=fps)
+        self.record_status.configure(text="Recording: preparing OBS…", fg=ORANGE)
+        threading.Thread(target=self._recording_worker_start, name="recording-start", daemon=True).start()
 
-    def _wait_for_first_portal(self):
-        recorder = self.native_recorders[0] if self.native_recorders else None
-        pending = getattr(self, "pending_app_recorder", None)
-        if not recorder or not pending or not self.running:
+    def _recording_worker_start(self):
+        recorder = self.recorder
+        if not self.running:
             return
-        output_ready = recorder.path and recorder.path.exists() and recorder.path.stat().st_size > 0
-        if output_ready:
-            self.start_second_native_recording()
-            return
-        if recorder.proc and recorder.proc.poll() is not None:
-            self.record_status.configure(text="Recording error: first Wayland window selection was cancelled.\nCheck the recorder log in FuckExamData/recordings.", fg=RED)
-            return
-        if time.monotonic() - getattr(self, "portal_wait_started", time.monotonic()) > 120:
-            self.record_status.configure(text="Recording timeout: first Wayland window was not confirmed.", fg=RED)
-            return
-        self.after(500, self._wait_for_first_portal)
-
-    def start_second_native_recording(self):
-        recorder = getattr(self, "pending_app_recorder", None)
-        if not recorder or not self.running:
-            return
-        messagebox.showinfo(
-            "Wayland recording — step 2 of 2",
-            "Первое окно уже запущено.\n\nСейчас будет показан второй системный запрос Wayland.\nВыберите окно FuckExam, НЕ весь экран и НЕ окно VirtualBox.",
-        )
         try:
-            path = recorder.start()
-        except OSError as exc:
-            self.record_status.configure(text=f"Recording error:\n{exc}", fg=RED)
+            path = recorder.start(
+                self.vm_title.get().strip(),
+                self.app_title.get().strip(),
+                request_picker=self._picker_dialog,
+            )
+        except OBSRecordingError as exc:
+            message = str(exc)
+            log_event("recording start failed: %s", exc)
+            self.after(0, lambda msg=message: self._recording_failed(msg))
             return
-        self.native_recorders.append(recorder)
-        self.pending_app_recorder = None
-        self.record_status.configure(text=f"Native recording:\nVM: {self.native_recorders[0].path}\nAPP: {path}", fg=GREEN)
+        except Exception:
+            log_event("recording start crashed:\n%s", traceback.format_exc())
+            self.after(0, lambda: self._recording_failed("Непредвиденная ошибка записи.\nПодробности в FuckExamData/fuckexam-runtime.log"))
+            return
+        if not self.running:
+            recorder.stop()
+            recorder.close()
+            return
+        self.after(0, lambda folder=path: self._recording_started(folder))
+
+    def _recording_failed(self, message: str):
+        self.record_status.configure(text=f"Recording unavailable:\n{message}", fg=RED)
+        self._set_status("recording unavailable")
+
+    def _recording_started(self, folder: Path):
+        self.record_status.configure(text=f"Recording:\nOBS → {folder}", fg=GREEN)
+        self._set_status("recording via OBS")
 
     def stop_recording(self):
-        if not self.recorder and not self.native_recorders:
+        recorder = self.recorder
+        if not recorder:
             return
-        errors = []
-        if self.recorder:
-            self.recorder.stop()
-            if self.recorder.error:
-                errors.append(self.recorder.error)
-        for recorder in self.native_recorders:
-            recorder.stop()
-            if recorder.error:
-                errors.append(recorder.error)
-        if errors:
-            joined_errors = "\n".join(errors)
-            self.record_status.configure(text=f"Recording error:\n{joined_errors}", fg=RED)
-            self._set_status(errors[0])
-        else:
-            self.record_status.configure(text="Recording: saved", fg=GREEN)
-            self._set_status("recording saved")
-        self.recorder = None
-        self.native_recorders = []
-        self.record_status.configure(text="Recording stopped", fg=MUTED)
+        self.record_status.configure(text="Recording: stopping…", fg=ORANGE)
+        threading.Thread(target=self._recording_worker_stop, args=(recorder,), name="recording-stop", daemon=True).start()
 
-    def _capture_loop(self, vm_title: str, app_title: str, fps: int):
-        interval = 1.0 / fps
-        last_geometry_at = 0.0
-        vm_box, app_box = self.host_vm_box, self.host_app_box
-        while self.running and not self.capture_stop.is_set():
+    def _recording_worker_stop(self, recorder):
+        try:
+            output_path, error = recorder.stop()
+        except OBSRecordingError as exc:
+            output_path, error = None, str(exc)
+        self.after(0, lambda: self._recording_stopped(output_path, error))
+
+    def _recording_stopped(self, output_path, error):
+        if output_path and output_path.exists():
+            self.record_status.configure(text=f"Recording saved:\n{output_path}", fg=GREEN)
+            self._set_status("recording saved")
+        else:
+            if not error:
+                error = "Файл записи не найден."
+            self.record_status.configure(text=f"Recording error:\n{error}", fg=RED)
+            self._set_status("recording error")
+
+    def _obs_preview_loop(self):
+        interval = 1.0 / PREVIEW_FPS
+        while self.running and not self.preview_stop.is_set():
             started = time.monotonic()
-            if started - last_geometry_at >= 1.0:
-                vm_box = resolve_window_box(vm_title, self.host_vm_box)
-                app_box = resolve_window_box(app_title, self.host_app_box)
-                last_geometry_at = started
-            frame = compose_frame(vm_box, app_box)
-            if self.recorder:
-                self.recorder.write(frame)
-            try:
-                self.frame_queue.put_nowait(frame)
-            except queue.Full:
-                pass
-            if self.server:
-                self.server.send_frame(jpeg_bytes(frame))
-            self.capture_stop.wait(max(0.001, interval - (time.monotonic() - started)))
+            data = self.recorder.scene_preview(640, 360) if self.recorder else None
+            if data:
+                try:
+                    image = Image.open(io.BytesIO(data)).copy()
+                    try:
+                        self.frame_queue.put_nowait(image)
+                    except queue.Full:
+                        pass
+                    if self.server:
+                        self.server.send_frame(data)
+                except Exception:
+                    pass
+            self.preview_stop.wait(max(0.001, interval - (time.monotonic() - started)))
 
     def start_viewer(self):
         if self.viewer:
@@ -812,6 +527,7 @@ class FuckExamApp(tk.Tk):
             pass
 
     def _render_loop(self):
+        self._process_picker_queue()
         try:
             frame = self.frame_queue.get_nowait()
             self._show_image(self.host_preview, frame)
@@ -846,22 +562,25 @@ class FuckExamApp(tk.Tk):
 
     def stop_all(self):
         self.running = False
-        self.capture_stop.set()
-        self.pending_app_recorder = None
-        if self.capture_thread and self.capture_thread is not threading.current_thread():
-            self.capture_thread.join(timeout=3)
-        self.capture_thread = None
+        self.preview_stop.set()
+        if self.preview_thread and self.preview_thread is not threading.current_thread():
+            self.preview_thread.join(timeout=3)
+        self.preview_thread = None
         if self.server:
             self.server.stop()
             self.server = None
         if self.viewer:
             self.viewer.stop()
             self.viewer = None
-        if self.recorder or self.native_recorders:
-            self.stop_recording()
+        recorder = self.recorder
+        if recorder:
+            if recorder.recording:
+                output_path, error = recorder.stop()
+                self._recording_stopped(output_path, error)
+            recorder.close()
+            self.recorder = None
         self.host_button.configure(text="START SESSION", bg=RED)
-        if not self.recorder and not self.native_recorders:
-            self._set_status("stopped")
+        self._set_status("stopped")
 
     def close(self):
         self.stop_all()

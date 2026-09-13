@@ -5,14 +5,6 @@ from enum import Enum
 
 
 @dataclass(frozen=True)
-class VMInfo:
-    identifier: str
-    name: str
-    uuid: str
-    state: str
-
-
-@dataclass(frozen=True)
 class WindowInfo:
     title: str
     handle: str | None = None
