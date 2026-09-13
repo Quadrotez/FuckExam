@@ -46,6 +46,7 @@ class GuestMouseNudgeAction:
     def _open_guest_mouse(self):
         try:
             import virtualbox
+            from virtualbox.library import LockType
         except ImportError as exc:
             raise GuestMouseError(
                 "Не найден Python VirtualBox SDK. Выполните: "
@@ -59,10 +60,7 @@ class GuestMouseNudgeAction:
             session = virtualbox.Session()
             # Shared lock lets us access the console of an already running VM
             # without taking control of the GUI process or host cursor.
-            lock_type = getattr(virtualbox.LockType, "shared", None)
-            if lock_type is None:
-                lock_type = getattr(virtualbox.LockType, "Shared")
-            machine.lock_machine(session, lock_type)
+            machine.lock_machine(session, LockType.shared)
             return session, session.console.mouse
         except Exception as exc:
             raise GuestMouseError(
