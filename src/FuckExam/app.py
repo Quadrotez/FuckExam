@@ -504,16 +504,13 @@ class FuckExamApp(tk.Tk):
         tk.Button(vm_row, text="↻", command=self.refresh_vms, bg=ORANGE, fg="black", relief="flat", width=3).pack(side="left", padx=(6, 0), ipady=4)
         self.vm_hint = tk.Label(controls, text="Loading VM list…", bg=PANEL, fg=MUTED, wraplength=230, justify="left")
         self.vm_hint.pack(anchor="w", padx=18, pady=(4, 4))
-        self.host_button = tk.Button(controls, text="START BROADCAST", command=self.start_host, bg=RED, fg="white", activebackground=ORANGE, relief="flat", padx=12, pady=9)
+        self.host_button = tk.Button(controls, text="START SESSION", command=self.start_host, bg=RED, fg="white", activebackground=ORANGE, relief="flat", padx=12, pady=9)
         self.host_button.pack(fill="x", padx=18, pady=(8, 3))
-        self.record_button = tk.Button(controls, text="START RECORDING", command=self.toggle_recording, bg=ORANGE, fg="black", activebackground=RED, relief="flat", padx=12, pady=8)
-        self.record_button.pack(fill="x", padx=18, pady=(0, 10))
         self.host_port = self._field(controls, "Port", "8765")
         self.host_fps = self._field(controls, "FPS", "15")
         self.vm_box = self._field(controls, "VM area x,y,width,height", "0,0,1280,720")
         self.app_box = self._field(controls, "App area x,y,width,height", "0,0,980,650")
         self.app_title = self._field(controls, "App window title", "FuckExam")
-        self.record_var = tk.BooleanVar(value=True)
         self.record_status = tk.Label(controls, text="Recording: ready", bg=PANEL, fg=MUTED, wraplength=230, justify="left")
         self.record_status.pack(anchor="w", padx=18, pady=(0, 8))
         self.capture_status = tk.Label(controls, text="Capture: automatic backend", bg=PANEL, fg=MUTED, wraplength=230, justify="left")
@@ -624,8 +621,9 @@ class FuckExamApp(tk.Tk):
         self.capture_stop.clear()
         self.capture_thread = threading.Thread(target=self._capture_loop, args=(selected_vm, self.app_title.get().strip(), fps), name="screen-capture", daemon=True)
         self.capture_thread.start()
-        self.host_button.configure(text="STOP BROADCAST", bg="#7d1f1f")
+        self.host_button.configure(text="STOP SESSION", bg="#7d1f1f")
         self._set_status(f"broadcasting {selected_vm} at {fps} FPS")
+        self.after(250, self.start_recording)
 
     def toggle_recording(self):
         if self.recorder:
@@ -656,7 +654,6 @@ class FuckExamApp(tk.Tk):
             self.native_recorders = []
             messagebox.showerror("Recording unavailable", str(exc))
             return
-        self.record_button.configure(text="STOP RECORDING", bg="#7d1f1f", fg="white")
         self.record_status.configure(text=f"Native recording:\n{path_text}" if self.native_recorders else f"Recording to:\n{path_text}", fg=GREEN)
         self._set_status(f"native Wayland recording at {fps} FPS" if self.native_recorders else f"recording frames at {fps} FPS")
 
@@ -681,7 +678,7 @@ class FuckExamApp(tk.Tk):
             self._set_status("recording saved")
         self.recorder = None
         self.native_recorders = []
-        self.record_button.configure(text="START RECORDING", bg=ORANGE, fg="black")
+        self.record_status.configure(text="Recording stopped", fg=MUTED)
 
     def _capture_loop(self, vm_title: str, app_title: str, fps: int):
         interval = 1.0 / fps
@@ -769,7 +766,7 @@ class FuckExamApp(tk.Tk):
             self.viewer = None
         if self.recorder:
             self.stop_recording()
-        self.host_button.configure(text="START BROADCAST", bg=RED)
+        self.host_button.configure(text="START SESSION", bg=RED)
         if not self.recorder:
             self._set_status("stopped")
 
