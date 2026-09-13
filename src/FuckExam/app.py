@@ -426,8 +426,6 @@ class FuckExamApp(tk.Tk):
         self.running = False
         self.capture_thread: threading.Thread | None = None
         self.capture_stop = threading.Event()
-        self.next_record_button = None
-        self.native_preview_active = False
         self.frame_queue: queue.Queue[Image.Image] = queue.Queue(maxsize=2)
         self.photo = None
         self._build_ui()
@@ -515,8 +513,6 @@ class FuckExamApp(tk.Tk):
         self.vm_hint.pack(anchor="w", padx=18, pady=(4, 4))
         self.host_button = tk.Button(controls, text="START SESSION", command=self.start_host, bg=RED, fg="white", activebackground=ORANGE, relief="flat", padx=12, pady=9)
         self.host_button.pack(fill="x", padx=18, pady=(8, 3))
-        self.next_record_button = tk.Button(controls, text="2. SELECT FUCKEXAM WINDOW", command=self.start_second_native_recording, bg=PANEL_2, fg=MUTED, activebackground=ORANGE, relief="flat", padx=8, pady=8, state="disabled")
-        self.next_record_button.pack(fill="x", padx=18, pady=(0, 10))
         self.host_port = self._field(controls, "Port", "8765")
         self.host_fps = self._field(controls, "FPS", "15")
         self.vm_box = self._field(controls, "VM area x,y,width,height", "0,0,1280,720")
@@ -651,7 +647,6 @@ class FuckExamApp(tk.Tk):
             if os.environ.get("WAYLAND_DISPLAY") and not NativeWaylandRecorder.available():
                 raise RuntimeError("Для Wayland нужен gpu-screen-recorder. Установите его через FIRST LAUNCH CHECK и перезапустите приложение.")
             if NativeWaylandRecorder.available():
-                self.native_preview_active = True
                 messagebox.showinfo(
                     "Wayland recording — step 1 of 2",
                     "Сейчас появится системный запрос Wayland.\n\nВыберите окно VirtualBox, содержащее запущенную VM.\nНе выбирайте весь экран и не выбирайте окно FuckExam.",
@@ -662,6 +657,7 @@ class FuckExamApp(tk.Tk):
                 self.native_recorders = [vm_recorder]
                 self.pending_app_recorder = app_recorder
                 self.pending_app_fps = fps
+                self.portal_wait_started = time.monotonic()
                 path_text = f"VM: {vm_path}\nChoose the VirtualBox window in the Wayland dialog.\nNext: FuckExam window."
             else:
                 self.recorder = CaptureRecorder(self.storage.root, fps=fps)
@@ -674,14 +670,29 @@ class FuckExamApp(tk.Tk):
         self.record_status.configure(text=f"Native recording:\n{path_text}" if self.native_recorders else f"Recording to:\n{path_text}", fg=GREEN)
         self._set_status(f"native Wayland recording at {fps} FPS" if self.native_recorders else f"recording frames at {fps} FPS")
         if self.native_recorders:
-            self.next_record_button.configure(state="normal", bg=ORANGE, fg="black")
+            self.after(500, self._wait_for_first_portal)
+
+    def _wait_for_first_portal(self):
+        recorder = self.native_recorders[0] if self.native_recorders else None
+        pending = getattr(self, "pending_app_recorder", None)
+        if not recorder or not pending or not self.running:
+            return
+        output_ready = recorder.path and recorder.path.exists() and recorder.path.stat().st_size > 0
+        if output_ready:
+            self.start_second_native_recording()
+            return
+        if recorder.proc and recorder.proc.poll() is not None:
+            self.record_status.configure(text="Recording error: first Wayland window selection was cancelled.\nCheck the recorder log in FuckExamData/recordings.", fg=RED)
+            return
+        if time.monotonic() - getattr(self, "portal_wait_started", time.monotonic()) > 120:
+            self.record_status.configure(text="Recording timeout: first Wayland window was not confirmed.", fg=RED)
+            return
+        self.after(500, self._wait_for_first_portal)
 
     def start_second_native_recording(self):
         recorder = getattr(self, "pending_app_recorder", None)
         if not recorder or not self.running:
             return
-        if self.next_record_button:
-            self.next_record_button.configure(state="disabled", bg=PANEL_2, fg=MUTED)
         messagebox.showinfo(
             "Wayland recording — step 2 of 2",
             "Первое окно уже запущено.\n\nСейчас будет показан второй системный запрос Wayland.\nВыберите окно FuckExam, НЕ весь экран и НЕ окно VirtualBox.",
@@ -717,7 +728,6 @@ class FuckExamApp(tk.Tk):
         self.recorder = None
         self.native_recorders = []
         self.record_status.configure(text="Recording stopped", fg=MUTED)
-        self.native_preview_active = False
 
     def _capture_loop(self, vm_title: str, app_title: str, fps: int):
         interval = 1.0 / fps
@@ -761,10 +771,7 @@ class FuckExamApp(tk.Tk):
     def _render_loop(self):
         try:
             frame = self.frame_queue.get_nowait()
-            if not self.native_preview_active:
-                self._show_image(self.host_preview, frame)
-            else:
-                self.host_preview.configure(image="", text="Native Wayland recording active\nPreview disabled to prevent recursive self-capture", fg=GREEN)
+            self._show_image(self.host_preview, frame)
         except queue.Empty:
             pass
         self.after(60, self._render_loop)
@@ -797,8 +804,6 @@ class FuckExamApp(tk.Tk):
     def stop_all(self):
         self.running = False
         self.capture_stop.set()
-        if self.next_record_button:
-            self.next_record_button.configure(state="disabled", bg=PANEL_2, fg=MUTED)
         self.pending_app_recorder = None
         if self.capture_thread and self.capture_thread is not threading.current_thread():
             self.capture_thread.join(timeout=3)
