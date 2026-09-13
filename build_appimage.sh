@@ -3,9 +3,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
-python3 -m pip install --user --upgrade pyinstaller Pillow
+BUILD_VENV="$ROOT/.build-venv"
+if [[ ! -x "$BUILD_VENV/bin/python" ]]; then
+  python3 -m venv "$BUILD_VENV"
+fi
+"$BUILD_VENV/bin/python" -m pip install --upgrade pip pyinstaller Pillow
 rm -rf build dist AppDir
-python3 -m PyInstaller --noconfirm --clean --windowed --name FuckExam --paths src --collect-all PIL src/FuckExam/__main__.py
+"$BUILD_VENV/bin/python" -m PyInstaller --noconfirm --clean --windowed --name FuckExam --paths src --collect-all PIL src/FuckExam/__main__.py
 
 mkdir -p AppDir/usr/bin AppDir/usr/share/applications AppDir/usr/share/icons/hicolor/256x256/apps
 cp -a dist/FuckExam/. AppDir/usr/bin/
