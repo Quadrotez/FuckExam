@@ -1,3 +1,3 @@
-from .app import main
+from FuckExam.app import main
 
 raise SystemExit(main())
