@@ -46,7 +46,7 @@ class EnvironmentReport:
         if not self.package_manager or not self.install_packages:
             return None
         if self.package_manager == "pacman":
-            return ["pacman", "-S", "--needed", *self.install_packages]
+            return ["pacman", "-S", "--needed", "--noconfirm", *self.install_packages]
         if self.package_manager == "apt-get":
             package_map = {"virtualbox": "virtualbox", "grim": "grim", "xdotool": "xdotool"}
             packages = [package_map.get(item, item) for item in self.install_packages]
@@ -136,9 +136,9 @@ def install_missing(report: EnvironmentReport) -> tuple[bool, str]:
     else:
         full_command = ["sudo", *command]
     try:
-        result = subprocess.run(full_command, check=False)
+        result = subprocess.run(full_command, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     except OSError as exc:
         return False, str(exc)
     if result.returncode != 0:
         return False, f"Установка завершилась с кодом {result.returncode}."
-    return True, "Установка завершена. Перезапустите проверку."
+        return True, "Установка завершена. Перезапустите проверку."
