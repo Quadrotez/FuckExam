@@ -48,6 +48,16 @@ python -m venv .venv
 python -m pip install -e .
 ```
 
+На Arch Linux установите системную часть SDK и Python-клиент:
+
+```bash
+sudo pacman -S virtualbox-sdk xdotool
+python -m pip install -e .
+python -c "import vboxapi, virtualbox; print('VirtualBox Python SDK: OK')"
+```
+
+Важно: `virtualbox` — Python-клиент, устанавливаемый через pip, а `vboxapi` — bindings от Oracle/Arch-пакета `virtualbox-sdk`. Наличие только `VBoxManage` недостаточно для отправки мыши непосредственно в гостя.
+
 ### Запуск в безопасном режиме
 
 ```bash

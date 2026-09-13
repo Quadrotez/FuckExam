@@ -48,8 +48,10 @@ class GuestMouseNudgeAction:
             import virtualbox
         except ImportError as exc:
             raise GuestMouseError(
-                "Не найден Python VirtualBox SDK. Установите `pip install virtualbox` "
-                "и vboxapi из SDK VirtualBox."
+                "Не найден Python VirtualBox SDK. Выполните: "
+                "`sudo pacman -S virtualbox-sdk` и `python -m pip install virtualbox`. "
+                "Проверьте импорт командами `python -c 'import vboxapi'` и "
+                "`python -c 'import virtualbox'`."
             ) from exc
         try:
             vbox = virtualbox.VirtualBox()
