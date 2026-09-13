@@ -8,6 +8,10 @@ venv/
 .coverage
 dist/
 build/
+AppDir/
+.build-venv/
+tools/
+*.spec
 .DS_Store
 .idea/
 .vscode/
