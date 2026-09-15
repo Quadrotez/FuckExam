@@ -141,13 +141,13 @@ h1 .accent { color: var(--accent); }
     position: relative; cursor: pointer;
     display: block; margin: 0 auto;
     border: none; outline: none; border-radius: 60px;
-    padding: 22px 60px;
-    font-size: 16px; font-weight: 700;
+    padding: 14px 36px;
+    font-size: 13px; font-weight: 700;
     letter-spacing: 1px; text-transform: uppercase;
     color: #fff; background: var(--accent);
     box-shadow:
-        0 0 24px rgba(255,30,30,0.45),
-        inset 0 -3px 8px rgba(0,0,0,0.4),
+        0 0 16px rgba(255,30,30,0.35),
+        inset 0 -2px 6px rgba(0,0,0,0.4),
         inset 0 1px 0 rgba(255,255,255,0.12);
     transition: transform 0.15s, box-shadow 0.25s, background 0.3s;
     overflow: hidden;
