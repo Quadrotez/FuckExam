@@ -583,4 +583,160 @@ mod tests {
             _ => panic!("expected binary"),
         }
     }
+
+    #[tokio::test]
+    async fn local_server_serves_viewer() {
+        use std::time::Duration;
+
+        let hub = Arc::new(StreamHub::default());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let stop = Arc::new(AtomicBool::new(false));
+        tokio::spawn(serve_local(hub.clone(), listener, stop.clone()));
+
+        let url = format!("ws://127.0.0.1:{port}");
+        let (mut ws, _resp) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        ws.send(Message::Text(
+            json!({"type":"hello","role":"viewer"}).to_string().into(),
+        ))
+        .await
+        .unwrap();
+
+        // welcome
+        let first = tokio::time::timeout(Duration::from_secs(2), ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        match &first {
+            Message::Text(t) => assert!(t.contains("welcome")),
+            other => panic!("expected welcome, got {other:?}"),
+        }
+
+        // второй клиент-наблюдатель для проверки рассылки
+        let (_vid, mut vrx) = hub.register(false);
+
+        hub.push_video(7, 100, 50, vec![0xDE; 64]);
+
+        // ws-viewer должен получить streams + бинарный кадр
+        let mut got_bin = false;
+        for _ in 0..4 {
+            let m = tokio::time::timeout(Duration::from_secs(2), ws.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            if let Message::Binary(b) = &m {
+                assert_eq!(&b[..4], &[7u8, 0, 0, 0]);
+                got_bin = true;
+                break;
+            }
+        }
+        assert!(got_bin, "viewer должен получить бинарный кадр");
+
+        // чат от ws-viewer доходит наблюдателю
+        ws.send(Message::Text(
+            json!({"type":"chat","from":"Ana","text":"preved"}).to_string().into(),
+        ))
+        .await
+        .unwrap();
+
+        let mut got_chat = false;
+        for _ in 0..4 {
+            match tokio::time::timeout(Duration::from_secs(2), vrx.recv())
+                .await
+                .unwrap()
+                .unwrap()
+            {
+                ClientEvent::Chat(m) => {
+                    assert_eq!(m.from, "Ana");
+                    assert_eq!(m.text, "preved");
+                    got_chat = true;
+                    break;
+                }
+                _ => continue,
+            }
+        }
+        assert!(got_chat, "наблюдатель должен получить чат");
+
+        ws.send(Message::Close(None)).await.unwrap();
+        stop.store(true, Ordering::Relaxed);
+    }
+
+    #[tokio::test]
+    async fn relay_client_pushes_and_receives_chat() {
+        use std::time::Duration;
+
+        let hub = Arc::new(StreamHub::default());
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("ws://{addr}");
+
+        let (hello_tx, hello_rx) = tokio::sync::oneshot::channel();
+        let (got_bin_tx, mut got_bin_rx) = tokio::sync::mpsc::channel(4);
+
+        let fake = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let (mut sink, mut rstream) = ws.split();
+            // ждём hello записывающего
+            loop {
+                match rstream.next().await {
+                    Some(Ok(Message::Text(t))) if t.contains("recorder") => {
+                        let _ = hello_tx.send(());
+                        break;
+                    }
+                    _ => continue,
+                }
+            }
+            // инжектим чат в сторону записывающего
+            let _ = sink
+                .send(Message::Text(
+                    json!({"type":"chat","from":"Prof","text":"oi"}).to_string().into(),
+                ))
+                .await;
+            // слушаем бинарные кадры от записывающего
+            while let Some(msg) = rstream.next().await {
+                if matches!(msg, Ok(Message::Binary(_))) {
+                    let _ = got_bin_tx.send(()).await;
+                }
+            }
+        });
+
+        // зритель на том же хабе, чтобы наблюдать чат
+        let (_vid, mut vrx) = hub.register(false);
+
+        let task = tokio::spawn(relay_client(hub.clone(), url, String::from("room42")));
+
+        hello_rx.await.expect("recorder hello");
+
+        hub.push_video(9, 320, 240, vec![0xAB; 128]);
+
+        tokio::time::timeout(Duration::from_secs(2), got_bin_rx.recv())
+            .await
+            .expect("relay должен получить бинарный кадр")
+            .expect("bin signal");
+
+        let mut got_chat = false;
+        for _ in 0..4 {
+            match tokio::time::timeout(Duration::from_secs(2), vrx.recv())
+                .await
+                .unwrap()
+                .unwrap()
+            {
+                ClientEvent::Chat(m) => {
+                    assert_eq!(m.from, "Prof");
+                    assert_eq!(m.text, "oi");
+                    got_chat = true;
+                    break;
+                }
+                _ => continue,
+            }
+        }
+        assert!(got_chat, "записывающий должен получить чат от relay");
+
+        task.abort();
+        fake.abort();
+    }
 }
