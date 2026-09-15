@@ -7,6 +7,7 @@
     --accent-glow: rgba(255, 30, 30, 0.25);
     --text: #eee;
     --text-dim: #886666;
+    --good: #26de81;
     --radius: 16px;
 }
 
@@ -426,8 +427,7 @@ h1.small { font-size: 26px; }
     background: rgba(255,30,30,0.06);
     border: 1px solid rgba(255,40,40,0.2);
     border-radius: 10px;
-    font-size: 12px; color: var(--text);
-    white-space: pre-wrap; font-family: 'JetBrains Mono', monospace;
+    font-size: 13px; color: var(--text);
     line-height: 1.6;
 }
 
@@ -487,6 +487,44 @@ h1.small { font-size: 26px; }
 }
 
 .v-form input:focus { border-color: var(--accent); }
+
+.s-status .s-sec { margin-top: 10px; }
+
+.s-addrs { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+
+.s-addr {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    background: var(--surface);
+    border: 1px solid rgba(255,255,255,0.14);
+    border-radius: 10px;
+    padding: 8px 10px;
+}
+
+.s-addr code {
+    font-family: ui-monospace, monospace;
+    font-size: 13px;
+    color: var(--accent);
+    word-break: break-all;
+}
+
+.btn-mini {
+    flex: none;
+    background: var(--surface2);
+    border: 1px solid rgba(255,255,255,0.14);
+    border-radius: 8px;
+    color: var(--text);
+    font-size: 12px;
+    padding: 5px 12px;
+    cursor: pointer;
+    font-weight: 600;
+}
+
+.btn-mini:hover { border-color: var(--accent); color: var(--accent); }
+
+.s-room code { color: var(--good); }
 
 .v-grid {
     width: 100%;

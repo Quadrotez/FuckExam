@@ -22,6 +22,7 @@ use crate::streaming::{self, StreamHub};
 struct FrameState {
     w: u32,
     h: u32,
+    stride: usize,
     bytes: Vec<u8>,
     ready: bool,
 }
@@ -191,9 +192,8 @@ fn run(
                 let mut f = frame.lock().unwrap();
                 f.w = w;
                 f.h = h;
-                if f.bytes.len() < n {
-                    f.bytes.resize(n, 0);
-                }
+                f.stride = stride;
+                f.bytes.resize(n, 0);
                 f.bytes[..n].copy_from_slice(&src_slice[..n]);
                 f.ready = true;
             }
@@ -232,7 +232,7 @@ fn writer_loop(
         }
         next = now + Duration::from_millis(33);
 
-        let (w, h, data) = {
+        let (w, h, stride, data) = {
             let f = frame.lock().unwrap();
             if !f.ready {
                 continue;
@@ -243,7 +243,7 @@ fn writer_loop(
             }
             let len = f.bytes.len();
             let data = f.bytes[..len].to_vec();
-            (f.w, f.h, data)
+            (f.w, f.h, f.stride, data)
         };
 
         if child.is_none() {
@@ -267,10 +267,15 @@ fn writer_loop(
 
         let now2 = Instant::now();
         if let Some(hub) = &stream {
-            if now2 >= next_push {
+            if now2 >= next_push && stride != 0 && data.len() >= stride * h as usize {
                 next_push = now2 + Duration::from_millis(100);
-                let stride = data.len() / h as usize;
                 if let Some(jpeg) = streaming::encode_jpeg(&data, w as usize, h as usize, stride) {
+                    if std::env::var_os("FEX_DEBUG").is_some() {
+                        eprintln!(
+                            "[fuckexam] window {node_id}: push jpeg {w}x{h} ({} bytes)",
+                            jpeg.len()
+                        );
+                    }
                     hub.push_video(node_id, w, h, jpeg);
                 }
             }

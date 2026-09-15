@@ -45,6 +45,7 @@ pub struct StreamStatus {
     pub room: Option<String>,
     pub viewers: usize,
     pub streams: Vec<StreamEntry>,
+    pub frames: u64,
 }
 
 pub struct Streaming(pub Arc<StreamHub>);
@@ -67,6 +68,7 @@ struct HubInner {
     streams: HashMap<u32, StreamEntry>,
     history: Vec<ChatMsg>,
     viewers: usize,
+    frames: u64,
 }
 
 #[derive(Default)]
@@ -95,6 +97,7 @@ impl Default for StreamHub {
                 streams: HashMap::new(),
                 history: Vec::new(),
                 viewers: 0,
+                frames: 0,
             }),
             app: Mutex::new(None),
             mode: Mutex::new(ModeState::default()),
@@ -297,6 +300,7 @@ impl StreamHub {
             let i = self.inner.lock().unwrap();
             (i.streams.values().cloned().collect(), i.viewers)
         };
+        let frames = self.inner.lock().unwrap().frames;
         StreamStatus {
             active,
             mode,
@@ -305,6 +309,7 @@ impl StreamHub {
             room,
             viewers,
             streams,
+            frames,
         }
     }
 
@@ -344,6 +349,7 @@ impl StreamHub {
 
     pub fn push_video(&self, node: u32, w: u32, h: u32, jpeg: Vec<u8>) {
         let mut i = self.inner.lock().unwrap();
+        i.frames = i.frames.saturating_add(1);
         let is_new = !i.streams.contains_key(&node);
         i.streams.insert(node, StreamEntry { id: node, w, h });
         if is_new {
@@ -354,7 +360,9 @@ impl StreamHub {
         }
         let ev = ClientEvent::Video { node, jpeg };
         for c in &i.clients {
-            let _ = c.tx.try_send(ev.clone());
+            if c.tx.try_send(ev.clone()).is_err() && std::env::var_os("FEX_DEBUG").is_some() {
+                eprintln!("[fuckexam] hub: drop frame for client {}", c.id);
+            }
         }
     }
 
@@ -428,6 +436,9 @@ async fn run_viewer(
     }
 
     let (id, rx) = hub.register(false);
+    if std::env::var_os("FEX_DEBUG").is_some() {
+        eprintln!("[fuckexam] hub: viewer registered (id={id})");
+    }
     let (streams, history) = {
         let i = hub.inner.lock().unwrap();
         (
@@ -586,6 +597,31 @@ mod tests {
     }
 
     #[test]
+    fn jpeg_1080p_speed_nonblack() {
+        // диагностика: скорость и цветность кодирования реального размера кадра
+        let (w, h) = (1920usize, 1080usize);
+        let stride = w * 4 + 64;
+        let mut buf = vec![0u8; stride * h];
+        for y in 0..h {
+            for x in 0..w {
+                let i = y * stride + x * 4;
+                let r = ((x as f32 / w as f32) * 255.0) as u8;
+                let g = ((y as f32 / h as f32) * 255.0) as u8;
+                buf[i] = r; // B канал (мнемонично не важно — проверяем только яркость)
+                buf[i + 1] = g;
+                buf[i + 2] = (r + g) / 2;
+                buf[i + 3] = 255;
+            }
+        }
+        let t0 = std::time::Instant::now();
+        let jpeg = encode_jpeg(&buf, w, h, stride).expect("jpeg 1080p");
+        let ms = t0.elapsed().as_millis();
+        eprintln!("encode 1920x1080 -> {} bytes in {ms} ms", jpeg.len());
+        let path = std::path::Path::new("/tmp/fex_diag.jpg");
+        std::fs::write(path, &jpeg).expect("write");
+    }
+
+#[test]
     fn local_addresses_octet_order() {
         // эндпоинты, которые реально попадают в локальную сеть
         if let Ok(list) = local_addresses() {
@@ -593,7 +629,7 @@ mod tests {
                 let octets = ip.split('.').collect::<Vec<_>>();
                 assert!(
                     ip.parse::<std::net::Ipv4Addr>().is_ok(),
-                    "неправильный IP: {ip}"
+                    "не привильный IP: {ip}"
                 );
                 assert_eq!(octets.len(), 4);
                 assert!(!ip.starts_with("1.0.0."), "байты перевёрнуты? {ip}");
@@ -677,6 +713,69 @@ mod tests {
         assert!(got_chat, "наблюдатель должен получить чат");
 
         ws.send(Message::Close(None)).await.unwrap();
+        stop.store(true, Ordering::Relaxed);
+    }
+
+    #[tokio::test]
+    async fn viewer_receives_real_jpeg() {
+        use std::time::Duration;
+
+        let hub = Arc::new(StreamHub::default());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let stop = Arc::new(AtomicBool::new(false));
+        tokio::spawn(serve_local(hub.clone(), listener, stop.clone()));
+
+        let url = format!("ws://127.0.0.1:{port}");
+        let (mut ws, _resp) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        ws.send(Message::Text(
+            json!({"type":"hello","role":"viewer"}).to_string().into(),
+        ))
+        .await
+        .unwrap();
+
+        let welcome = tokio::time::timeout(Duration::from_secs(2), ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(welcome, Message::Text(t) if t.contains("welcome")));
+
+        // точно как writer_loop: фрейм BGRA -> encode_jpeg -> hub.push_video
+        let (w, h) = (640usize, 360usize);
+        let stride = w * 4;
+        let mut bg = vec![0u8; stride * h];
+        for y in 0..h {
+            for x in 0..w {
+                let i = y * stride + x * 4;
+                let r = ((x as f32 / w as f32) * 255.0) as u8;
+                let g = ((y as f32 / h as f32) * 255.0) as u8;
+                bg[i] = r;
+                bg[i + 1] = g;
+                bg[i + 2] = 0;
+                bg[i + 3] = 255;
+            }
+        }
+        let jpeg = encode_jpeg(&bg, w, h, stride).expect("jpeg");
+        hub.push_video(3, w as u32, h as u32, jpeg);
+
+        // viewer должен получить streams + бинарный кадр с настоящим jpeg
+        let mut got_bin = false;
+        for _ in 0..4 {
+            let m = tokio::time::timeout(Duration::from_secs(2), ws.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            if let Message::Binary(b) = &m {
+                assert_eq!(&b[..4], &[3u8, 0, 0, 0]);
+                assert!(b.len() > 4);
+                std::fs::write("/tmp/fex_viewer_frame.jpg", &b[4..]).ok();
+                got_bin = true;
+                break;
+            }
+        }
+        assert!(got_bin, "viewer должен получить бинарный кадр");
         stop.store(true, Ordering::Relaxed);
     }
 

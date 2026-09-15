@@ -198,28 +198,86 @@ sModeWrap.querySelectorAll('.seg-btn').forEach((b) => {
     });
 });
 
+let sPollTimer = null;
+
+function sTickerStart() {
+    if (sPollTimer) return;
+    sPollTimer = setInterval(async () => {
+        try {
+            const st = await invoke('stream_status');
+            renderSStatus(st);
+        } catch (_) {}
+    }, 1500);
+}
+
+function sTickerStop() {
+    if (sPollTimer) {
+        clearInterval(sPollTimer);
+        sPollTimer = null;
+    }
+}
+
 function renderSStatus(st) {
     if (st && st.active) {
-        const lines = [];
+        let html = '';
         if (sMode === 'local' && st.addresses.length) {
-            lines.push('Зрители подключаются по адресу:');
-            st.addresses.forEach((a) => lines.push('  ' + a));
+            html += '<div class="s-sec">Зрители подключаются по адресу:</div>';
+            html += '<div class="s-addrs">';
+            st.addresses.forEach((a) => {
+                html +=
+                    `<div class="s-addr"><code>${escapeHtml(a)}</code>` +
+                    `<button class="btn-mini" data-copy="${escapeHtml(a)}">Скопировать</button></div>`;
+            });
+            html += '</div>';
             sActAddr = st.addresses[0] || '';
         } else if (sMode === 'relay') {
-            lines.push('Relay: ' + (st.relay || ''));
-            lines.push('Комната: ' + (st.room || ''));
+            html += '<div class="s-sec">Подключение к relay:</div>';
+            html += '<div class="s-addrs">';
+            html +=
+                `<div class="s-addr"><code>${escapeHtml(st.relay || '')}</code>` +
+                `<button class="btn-mini" data-copy="${escapeHtml(st.relay || '')}">Скопировать</button></div>`;
+            if (st.room) {
+                html +=
+                    `<div class="s-addr s-room"><code>${escapeHtml(st.room)}</code>` +
+                    `<button class="btn-mini" data-copy="${escapeHtml(st.room)}">Скопировать</button></div>`;
+            }
+            html += '</div>';
             sActAddr = st.relay || '';
         }
-        lines.push(`В сети: ${st.viewers} зрителей · стримов: ${st.streams.length}`);
-        sStatusEl.textContent = lines.join('\n');
+        html +=
+            `<div class="s-sec">В сети: <b>${st.viewers}</b> зрителей · ` +
+            `стримов: ${st.streams.length} · кадров: ${st.frames ?? 0}</div>`;
+        sStatusEl.innerHTML = html;
         sStatusEl.classList.remove('hidden');
+        sStatusEl.querySelectorAll('[data-copy]').forEach((b) => {
+            b.addEventListener('click', () => {
+                const t = String(b.dataset.copy);
+                const done = () => {
+                    b.textContent = 'Готово';
+                    setTimeout(() => (b.textContent = 'Скопировать'), 1200);
+                };
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(t).then(done, done);
+                } else {
+                    const ta = document.createElement('textarea');
+                    ta.value = t;
+                    document.body.appendChild(ta);
+                    ta.select();
+                    document.execCommand('copy');
+                    ta.remove();
+                    done();
+                }
+            });
+        });
         sStart.disabled = true;
         sStop.disabled = false;
+        sTickerStart();
     } else {
         sStatusEl.classList.add('hidden');
-        sStatusEl.textContent = '';
+        sStatusEl.innerHTML = '';
         sStart.disabled = false;
         sStop.disabled = true;
+        sTickerStop();
     }
 }
 
@@ -308,6 +366,7 @@ function vSetStatus(text) {
 
 function vChatAppend(html) {
     const div = document.createElement('div');
+    div.className = 'msg';
     div.innerHTML = html;
     vChatLog.appendChild(div);
     vChatLog.scrollTop = vChatLog.scrollHeight;
