@@ -76,7 +76,11 @@
                             </div>
                             <div class="s-field" data-field="url" style="display:none">
                                 <label for="s-relay-url">Relay WS</label>
-                                <input id="s-relay-url" placeholder="ws://host:7444">
+                                <div class="s-input-row">
+                                    <input id="s-relay-url" placeholder="ws://host:7444">
+                                    <button id="s-relay-check" class="btn-mini">Проверить</button>
+                                </div>
+                                <span id="s-relay-check-status" class="relay-check-status"></span>
                             </div>
                             <div class="s-field" data-field="room" style="display:none">
                                 <label for="s-room">Комната</label>
@@ -117,7 +121,7 @@
             </header>
 
             <div class="v-form">
-                <input id="v-url" placeholder="ws://192.168.1.10:7335">
+                <input id="v-url" placeholder="ws://ip:port (relay или записывающий)">
                 <input id="v-room" placeholder="комната (для relay)">
                 <input id="v-name" placeholder="ваше имя">
                 <button id="v-connect" class="btn-sec">Подключиться</button>

@@ -50,6 +50,11 @@ fn stream_stop(state: State<'_, streaming::Streaming>) {
     state.0.deactivate();
 }
 
+#[tauri::command]
+async fn relay_ping(url: String) -> Result<String, String> {
+    streaming::ping_relay(url).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let hub = Arc::new(streaming::StreamHub::default());
@@ -66,7 +71,8 @@ pub fn run() {
             stream_start,
             relay_connect,
             stream_status,
-            stream_stop
+            stream_stop,
+            relay_ping
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

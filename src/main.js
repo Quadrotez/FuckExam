@@ -171,7 +171,41 @@ const sRoom = $('s-room');
 const sStart = $('s-start');
 const sStop = $('s-stop');
 const sStatusEl = $('s-status');
+const sRelayCheck = $('s-relay-check');
+const sRelayCheckStatus = $('s-relay-check-status');
 const sStatusBox = document.querySelector('#view-recorder .status-bar');
+
+const SETTINGS_KEY = 'fuckexam-settings';
+
+function loadSettings() {
+    try {
+        const raw = localStorage.getItem(SETTINGS_KEY);
+        if (!raw) return;
+        const s = JSON.parse(raw);
+        if (s.port) sPort.value = s.port;
+        if (s.relayUrl) sRelayUrl.value = s.relayUrl;
+        if (s.relayRoom) sRoom.value = s.relayRoom;
+        if (s.viewerUrl) vUrl.value = s.viewerUrl;
+        if (s.viewerRoom) vRoom.value = s.viewerRoom;
+        if (s.viewerName) vName.value = s.viewerName;
+    } catch (_) {}
+}
+
+function saveSettings() {
+    try {
+        localStorage.setItem(
+            SETTINGS_KEY,
+            JSON.stringify({
+                port: sPort.value,
+                relayUrl: sRelayUrl.value,
+                relayRoom: sRoom.value,
+                viewerUrl: vUrl.value,
+                viewerRoom: vRoom.value,
+                viewerName: vName.value,
+            })
+        );
+    } catch (_) {}
+}
 
 let sMode = 'local';
 let sActAddr = '';
@@ -242,6 +276,23 @@ function renderSStatus(st) {
                     `<button class="btn-mini" data-copy="${escapeHtml(st.room)}">Скопировать</button></div>`;
             }
             html += '</div>';
+            if (st.relay) {
+                const roomTxt = st.room ? st.room : '';
+                html += '<div class="s-sec">Укажите зрителю:</div>';
+                html += '<div class="s-addrs">';
+                html +=
+                    `<div class="s-addr"><code>${escapeHtml(st.relay)}</code>` +
+                    `<button class="btn-mini" data-copy="${escapeHtml(st.relay)}">Копировать адрес</button></div>`;
+                if (roomTxt) {
+                    html +=
+                        `<div class="s-addr s-room"><code>${escapeHtml(roomTxt)}</code>` +
+                        `<button class="btn-mini" data-copy="${escapeHtml(roomTxt)}">Копировать комнату</button></div>`;
+                    html +=
+                        `<div class="s-addr s-copy-all"><span>Скопировать всё</span>` +
+                        `<button class="btn-mini" data-copy-all="${escapeHtml(st.relay)}|${escapeHtml(roomTxt)}">Копировать</button></div>`;
+                }
+                html += '</div>';
+            }
             sActAddr = st.relay || '';
         }
         html +=
@@ -255,6 +306,27 @@ function renderSStatus(st) {
                 const done = () => {
                     b.textContent = 'Готово';
                     setTimeout(() => (b.textContent = 'Скопировать'), 1200);
+                };
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(t).then(done, done);
+                } else {
+                    const ta = document.createElement('textarea');
+                    ta.value = t;
+                    document.body.appendChild(ta);
+                    ta.select();
+                    document.execCommand('copy');
+                    ta.remove();
+                    done();
+                }
+            });
+        });
+        sStatusEl.querySelectorAll('[data-copy-all]').forEach((b) => {
+            b.addEventListener('click', () => {
+                const [addr, room] = String(b.dataset.copyAll).split('|');
+                const t = `${addr}\nкомната: ${room}`;
+                const done = () => {
+                    b.textContent = 'Готово';
+                    setTimeout(() => (b.textContent = 'Копировать'), 1200);
                 };
                 if (navigator.clipboard && navigator.clipboard.writeText) {
                     navigator.clipboard.writeText(t).then(done, done);
@@ -283,15 +355,21 @@ function renderSStatus(st) {
 
 async function streamStart() {
     try {
+        let relayUrl = sRelayUrl.value.trim();
+        if (sMode === 'relay' && relayUrl && !relayUrl.startsWith('ws://') && !relayUrl.startsWith('wss://')) {
+            relayUrl = 'ws://' + relayUrl;
+            sRelayUrl.value = relayUrl;
+        }
         const st =
             sMode === 'local'
                 ? await invoke('stream_start', {
                       port: parseInt(sPort.value, 10) || 7335,
                   })
                 : await invoke('relay_connect', {
-                      url: sRelayUrl.value.trim(),
+                      url: relayUrl,
                       room: sRoom.value.trim() || null,
                   });
+        saveSettings();
         renderSStatus(st);
     } catch (e) {
         setStatus('трансляция: ' + String(e), false);
@@ -310,6 +388,35 @@ async function streamStop() {
 
 sStart.addEventListener('click', streamStart);
 sStop.addEventListener('click', streamStop);
+
+sRelayCheck.addEventListener('click', async () => {
+    let url = sRelayUrl.value.trim();
+    if (!url) {
+        sRelayCheckStatus.textContent = 'введите адрес relay';
+        sRelayCheckStatus.classList.remove('ok');
+        sRelayCheckStatus.classList.add('err');
+        return;
+    }
+    if (!url.startsWith('ws://') && !url.startsWith('wss://')) {
+        url = 'ws://' + url;
+        sRelayUrl.value = url;
+    }
+    sRelayCheck.disabled = true;
+    sRelayCheckStatus.textContent = 'проверка…';
+    sRelayCheckStatus.classList.remove('ok', 'err');
+    try {
+        const msg = await invoke('relay_ping', { url });
+        sRelayCheckStatus.textContent = '✓ ' + msg;
+        sRelayCheckStatus.classList.add('ok');
+    } catch (e) {
+        sRelayCheckStatus.textContent = '✗ ' + String(e);
+        sRelayCheckStatus.classList.add('err');
+    } finally {
+        sRelayCheck.disabled = false;
+        saveSettings();
+    }
+});
+
 setSeg('local');
 
 const recChatLog = $('chat-log');
@@ -359,6 +466,7 @@ const vChatInput = $('v-chat-input');
 
 let vsock = null;
 let vFrames = 0;
+let vConnAborted = false;
 const vstreams = new Map(); // node -> { img, stale }
 
 function vSetStatus(text) {
@@ -492,9 +600,13 @@ function vHandleMsg(evt) {
         }
         switch (msg.type) {
             case 'welcome':
-                vSetStatus(`подключено (${msg.streams.length} стримов)`);
                 vFrames = 0;
                 vReconcile(msg.streams);
+                if (msg.streams.length === 0) {
+                    vSetStatus('подключено, стримов нет — ждите записывающего или проверьте комнату');
+                } else {
+                    vSetStatus(`подключено (${msg.streams.length} стримов)`);
+                }
                 if (msg.history) {
                     msg.history.forEach((m) =>
                         vChatAppend(
@@ -505,7 +617,11 @@ function vHandleMsg(evt) {
                 break;
             case 'streams':
                 vReconcile(msg.streams);
-                vSetStatus(`подключено (${msg.streams.length} стримов)`);
+                if (msg.streams.length === 0) {
+                    vSetStatus('подключено, стримов нет');
+                } else {
+                    vSetStatus(`подключено (${msg.streams.length} стримов)`);
+                }
                 break;
             case 'stream-end':
                 vRemoveImg(msg.id);
@@ -534,25 +650,43 @@ function vHandleMsg(evt) {
 }
 
 function doConnect() {
-    const url = vUrl.value.trim();
+    let url = vUrl.value.trim();
     if (!url) {
         vSetStatus('введите адрес ws://…');
         return;
+    }
+    if (!url.startsWith('ws://') && !url.startsWith('wss://')) {
+        url = 'ws://' + url;
+        vUrl.value = url;
     }
     let ws;
     try {
         ws = new WebSocket(url);
     } catch (e) {
-        vSetStatus('неверный адрес');
+        vSetStatus('неверный адрес (нужен формат ws://ip:port)');
         return;
     }
+    vConnAborted = false;
     vsock = ws;
     ws.binaryType = 'arraybuffer';
     vSetStatus('подключение…');
     vConnect.disabled = true;
     vDisconnect.disabled = false;
 
+    const connTimer = setTimeout(() => {
+        if (ws.readyState === WebSocket.CONNECTING) {
+            vConnAborted = true;
+            vSetStatus('ошибка: таймаут подключения (проверьте адрес и фаервол сервера)');
+            try {
+                ws.close();
+            } catch (_) {}
+            vResetConn();
+        }
+    }, 8000);
+
     ws.addEventListener('open', () => {
+        clearTimeout(connTimer);
+        saveSettings();
         ws.send(
             JSON.stringify({
                 type: 'hello',
@@ -563,11 +697,17 @@ function doConnect() {
     });
     ws.addEventListener('message', vHandleMsg);
     ws.addEventListener('close', () => {
-        vSetStatus('отключено');
+        clearTimeout(connTimer);
+        if (!vConnAborted) {
+            vSetStatus('отключено');
+        }
         vResetConn();
     });
     ws.addEventListener('error', () => {
-        vSetStatus('ошибка соединения');
+        clearTimeout(connTimer);
+        if (!vConnAborted) {
+            vSetStatus('ошибка соединения');
+        }
     });
 }
 
@@ -601,5 +741,6 @@ vChatForm.addEventListener('submit', (e) => {
 
 /* ---------------- boot ---------------- */
 
+loadSettings();
 refresh();
 showView('landing');

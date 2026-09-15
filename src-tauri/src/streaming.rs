@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex},
+    time::Duration,
 };
 
 use futures_util::{SinkExt, StreamExt};
@@ -249,6 +250,42 @@ fn gen_room() -> String {
         format!("{:08x}", u32::from_le_bytes(buf))
     } else {
         format!("{:08x}", std::process::id())
+    }
+}
+
+/// Проверка доступности relay: подключаемся как зритель в тестовую комнату
+/// и ждём welcome. Позволяет узнать «ворк/не ворк» до запуска трансляции.
+pub async fn ping_relay(url: String) -> Result<String, String> {
+    let url = if url.starts_with("ws://") || url.starts_with("wss://") {
+        url
+    } else {
+        format!("ws://{url}")
+    };
+    let (mut ws, _resp) = tokio_tungstenite::connect_async(&url)
+        .await
+        .map_err(|e| format!("не удалось подключиться: {e}"))?;
+    let hello = json!({"type":"hello","role":"viewer","room":"__ping__"}).to_string();
+    ws.send(Message::Text(hello.into()))
+        .await
+        .map_err(|e| format!("не удалось отправить hello: {e}"))?;
+
+    match tokio::time::timeout(Duration::from_secs(3), ws.next()).await {
+        Ok(Some(Ok(Message::Text(t)))) if t.contains("\"type\":\"welcome\"") => {
+            let _ = ws.send(Message::Close(None)).await;
+            Ok(format!("relay доступен ({url})"))
+        }
+        Ok(Some(Ok(Message::Text(t)))) if t.contains("\"type\":\"error\"") => {
+            let _ = ws.send(Message::Close(None)).await;
+            Err(format!("relay вернул ошибку: {t}"))
+        }
+        Ok(_) => {
+            let _ = ws.send(Message::Close(None)).await;
+            Err("неожиданный ответ от relay".into())
+        }
+        Err(_) => {
+            let _ = ws.send(Message::Close(None)).await;
+            Err("таймаут: relay не отвечает (проверьте адрес, порт, фаервол)".into())
+        }
     }
 }
 
@@ -835,8 +872,56 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn relay_client_pushes_and_receives_chat() {
+    async fn ping_relay_ok() {
         use std::time::Duration;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("ws://{addr}");
+
+        let fake = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let (mut sink, mut rstream) = ws.split();
+            // ждём hello-зрителя
+            loop {
+                match rstream.next().await {
+                    Some(Ok(Message::Text(t))) if t.contains("viewer") => break,
+                    _ => continue,
+                }
+            }
+            // отвечаем welcome
+            let _ = sink
+                .send(Message::Text(json!({"type":"welcome","streams":[],"history":[]}).to_string().into()))
+                .await;
+            let _ = tokio::time::timeout(Duration::from_secs(2), rstream.next()).await;
+        });
+
+        let res = ping_relay(url).await;
+        assert!(res.is_ok(), "ping должен пройти: {res:?}");
+        assert!(res.unwrap().contains("relay доступен"));
+        fake.abort();
+    }
+
+    #[tokio::test]
+    async fn ping_relay_connection_refused() {
+        // никто не слушает порт — должны получить понятную ошибку
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let res = ping_relay(format!("ws://{addr}")).await;
+        assert!(res.is_err(), "ping к закрытому порту должен падать: {res:?}");
+    }
+
+    #[tokio::test]
+    async fn ping_relay_rejects_bad_url() {
+        let res = ping_relay("не-адрес".into()).await;
+        assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn relay_client_pushes_and_receives_chat() {
 
         let hub = Arc::new(StreamHub::default());
 
