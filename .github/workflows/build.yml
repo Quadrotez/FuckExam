@@ -19,7 +19,6 @@ permissions:
 
 env:
   GHCR_IMAGE: ghcr.io/quadrotez/fuck-exam-relay
-  IS_TAG: ${{ startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
   # Linux: .deb + .AppImage + бинарник записывающего
@@ -80,7 +79,7 @@ jobs:
           path: release-artifacts/
 
       - name: Attach to GitHub Release
-        if: ${{ env.IS_TAG }}
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           draft: false
@@ -125,7 +124,7 @@ jobs:
           path: release-artifacts/
 
       - name: Attach to GitHub Release
-        if: ${{ env.IS_TAG }}
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           draft: false
@@ -137,7 +136,7 @@ jobs:
     runs-on: ubuntu-24.04
     # пушим образ только на тегах и по ручному запуску,
     # в master-CI копилка образов не нужна
-    if: ${{ env.IS_TAG || github.event_name == 'workflow_dispatch' }}
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
 
