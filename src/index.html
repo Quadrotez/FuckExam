@@ -11,31 +11,128 @@
     <div class="scanlines"></div>
     <div class="vignette"></div>
 
-    <div class="container">
-        <header>
-            <div class="logo">
-                <span class="logo-icon">◈</span>
-                <h1>F<span class="accent">u</span>ckExam</h1>
+    <div id="view-landing" class="view active">
+        <div class="container">
+            <header>
+                <div class="logo">
+                    <span class="logo-icon">◈</span>
+                    <h1>F<span class="accent">u</span>ckExam</h1>
+                </div>
+                <p class="subtitle">Запись · Трансляция · Чат</p>
+            </header>
+
+            <div class="role-cards">
+                <button class="role-card" data-role="recorder">
+                    <span class="role-icon">🎥</span>
+                    <span class="role-title">Записывающий</span>
+                    <span class="role-desc">записывает окна и транслирует<br>на остальные машины</span>
+                </button>
+                <button class="role-card" data-role="viewer">
+                    <span class="role-icon">👁</span>
+                    <span class="role-title">Зритель</span>
+                    <span class="role-desc">смотрит трансляцию вживую<br>и пишет в чат</span>
+                </button>
             </div>
-            <p class="subtitle">Запись окон · Wayland · PipeWire</p>
-        </header>
 
-        <div class="status-bar">
-            <span class="dot"></span>
-            <span id="status-text">готово</span>
-            <span id="timer" class="timer hidden"></span>
+            <p class="hint">выберите свою роль</p>
         </div>
+    </div>
 
-        <button id="btn" class="btn-rec">
-            <span class="btn-label">Начать запись</span>
-            <span class="btn-pulse"></span>
-        </button>
+    <div id="view-recorder" class="view">
+        <div class="container container-wide">
+            <header>
+                <div class="logo logo-sm">
+                    <span class="logo-icon small">◈</span>
+                    <h1 class="small">F<span class="accent">u</span>ckExam</h1>
+                </div>
+                <button class="link-btn" data-back="landing">← смена роли</button>
+            </header>
 
-        <div id="windows" class="windows"></div>
+            <div class="status-bar">
+                <span class="dot"></span>
+                <span id="status-text">готово</span>
+                <span id="timer" class="timer hidden"></span>
+            </div>
 
-        <div class="footer">
-            <p class="path-hint" id="path-hint"></p>
-            <p class="hint">Выделите нужные окна в появившемся диалоге и подтвердите</p>
+            <button id="btn" class="btn-rec">
+                <span class="btn-label">Начать запись</span>
+                <span class="btn-pulse"></span>
+            </button>
+
+            <div id="windows" class="windows"></div>
+
+            <section class="panel">
+                <h2>Трансляция</h2>
+                <div class="seg" id="seg-mode">
+                    <button class="seg-btn active" data-mode="local">Локально</button>
+                    <button class="seg-btn" data-mode="relay">Через relay</button>
+                </div>
+                <div class="s-form">
+                    <div class="s-field" data-field="port">
+                        <label for="s-port">Порт</label>
+                        <input id="s-port" value="7335">
+                    </div>
+                    <div class="s-field" data-field="url" style="display:none">
+                        <label for="s-relay-url">Relay WS</label>
+                        <input id="s-relay-url" placeholder="ws://host:7444">
+                    </div>
+                    <div class="s-field" data-field="room" style="display:none">
+                        <label for="s-room">Комната</label>
+                        <input id="s-room" placeholder="случайная, если пусто">
+                    </div>
+                </div>
+                <div class="s-actions">
+                    <button id="s-start" class="btn-sec">Запустить</button>
+                    <button id="s-stop" class="btn-sec" disabled>Остановить</button>
+                </div>
+                <div id="s-status" class="s-status hidden"></div>
+            </section>
+
+            <section class="panel chat-ro">
+                <h3>Чат зрителей <span class="dim">(только чтение)</span></h3>
+                <div id="chat-log" class="chat-log"></div>
+            </section>
+
+            <div class="footer">
+                <p class="path-hint" id="path-hint"></p>
+                <p class="hint">Выделите нужные окна в появившемся диалоге и подтвердите</p>
+            </div>
+        </div>
+    </div>
+
+    <div id="view-viewer" class="view">
+        <div class="container container-wide">
+            <header>
+                <div class="logo logo-sm">
+                    <span class="logo-icon small">◈</span>
+                    <h1 class="small">F<span class="accent">u</span>ckExam</h1>
+                </div>
+                <button class="link-btn" data-back="landing">← смена роли</button>
+            </header>
+
+            <div class="v-form">
+                <input id="v-url" placeholder="ws://192.168.1.10:7335">
+                <input id="v-room" placeholder="комната (для relay)">
+                <input id="v-name" placeholder="ваше имя">
+                <button id="v-connect" class="btn-sec">Подключиться</button>
+                <button id="v-disconnect" class="btn-sec" disabled>Отключиться</button>
+            </div>
+
+            <div class="status-bar" id="v-status">
+                <span class="dot"></span>
+                <span id="v-status-text">не подключено</span>
+            </div>
+
+            <div id="v-grid" class="v-grid"></div>
+
+            <section class="panel chat-rw">
+                <h3>Чат</h3>
+                <div id="v-chat-log" class="chat-log"></div>
+                <form id="v-chat-form" class="chat-form">
+                    <input id="v-chat-input" placeholder="Сообщение…" autocomplete="off">
+                    <button type="submit" class="btn-sec">➤</button>
+                </form>
+            </section>
         </div>
     </div>
 

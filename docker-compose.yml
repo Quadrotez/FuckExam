@@ -1,0 +1,9 @@
+services:
+  relay:
+    build: ./relay
+    container_name: fuck-exam-relay
+    restart: unless-stopped
+    environment:
+      RELAY_PORT: "7444"
+    ports:
+      - "7444:7444"

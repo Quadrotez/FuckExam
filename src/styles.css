@@ -258,3 +258,263 @@ h1 .accent { color: var(--accent); }
     75%  { opacity: 0.7; }
     100% { opacity: 1; }
 }
+
+/* ---------------- roles / views ---------------- */
+
+.view {
+    position: relative; z-index: 1;
+    height: 100%; width: 100%;
+    display: none;
+}
+
+.view.active {
+    display: block;
+}
+
+.container-wide {
+    justify-content: flex-start;
+    overflow-y: auto;
+    gap: 18px;
+}
+
+.role-cards {
+    display: flex; gap: 18px;
+    flex-wrap: wrap; justify-content: center;
+    margin: 12px 0;
+}
+
+.role-card {
+    cursor: pointer;
+    width: 220px; padding: 26px 20px;
+    background: var(--surface);
+    border: 1px solid rgba(255,40,40,0.15);
+    border-radius: var(--radius);
+    text-align: center; color: var(--text);
+    transition: transform 0.15s, border-color 0.25s, background 0.25s,
+                box-shadow 0.25s;
+    box-shadow: 0 0 0 rgba(255,30,30,0);
+}
+
+.role-card:hover {
+    transform: translateY(-3px);
+    border-color: rgba(255,40,40,0.5);
+    background: var(--surface2);
+    box-shadow: 0 0 30px var(--accent-glow);
+}
+
+.role-icon {
+    display: block; font-size: 40px; margin-bottom: 10px;
+}
+
+.role-title {
+    display: block; font-size: 17px; font-weight: 700;
+    color: var(--accent); letter-spacing: 1px; text-transform: uppercase;
+    margin-bottom: 8px;
+}
+
+.role-desc {
+    font-size: 12px; color: var(--text-dim); line-height: 1.5;
+}
+
+.link-btn {
+    cursor: pointer;
+    background: transparent; border: none; color: var(--text-dim);
+    font-size: 13px; margin-top: 8px;
+    transition: color 0.2s;
+}
+
+.link-btn:hover { color: var(--accent); }
+
+.logo-sm { margin-bottom: 0; }
+
+.logo-icon.small { font-size: 22px; }
+h1.small { font-size: 26px; }
+
+/* ---------------- panels ---------------- */
+
+.panel {
+    width: 100%; max-width: 480px;
+    padding: 16px 18px;
+    background: rgba(18,0,0,0.7);
+    border: 1px solid rgba(255,40,40,0.12);
+    border-radius: var(--radius);
+}
+
+.panel h2 {
+    font-size: 14px; text-transform: uppercase; letter-spacing: 2px;
+    color: var(--accent); margin-bottom: 12px;
+}
+
+.panel h3 {
+    font-size: 13px; letter-spacing: 1px; color: var(--text);
+    margin-bottom: 10px;
+}
+
+.panel h3 .dim { color: var(--text-dim); text-transform: none; font-size: 11px; }
+
+.seg {
+    display: flex; gap: 6px; margin-bottom: 12px;
+    background: rgba(0,0,0,0.4);
+    border: 1px solid rgba(255,40,40,0.12);
+    border-radius: 12px; padding: 4px;
+}
+
+.seg-btn {
+    flex: 1; cursor: pointer;
+    background: transparent; border: none; color: var(--text-dim);
+    padding: 8px 0; font-size: 13px; border-radius: 9px;
+    transition: background 0.2s, color 0.2s;
+}
+
+.seg-btn.active {
+    background: var(--accent);
+    color: #fff;
+    box-shadow: 0 0 14px rgba(255,30,30,0.5);
+}
+
+.s-form {
+    display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px;
+}
+
+.s-form label {
+    font-size: 11px; color: var(--text-dim); text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.s-field {
+    display: flex; flex-direction: column; gap: 6px;
+}
+
+.s-form input {
+    width: 100%;
+    background: rgba(0,0,0,0.45);
+    border: 1px solid rgba(255,40,40,0.15);
+    border-radius: 10px;
+    padding: 9px 12px;
+    color: var(--text); font-size: 13px; outline: none;
+    transition: border-color 0.2s;
+}
+
+.s-form input:focus { border-color: var(--accent); }
+
+.s-actions { display: flex; gap: 10px; }
+
+.btn-sec {
+    cursor: pointer;
+    background: var(--accent);
+    border: none; border-radius: 12px;
+    padding: 11px 22px;
+    color: #fff; font-weight: 700; font-size: 13px; letter-spacing: 1px;
+    transition: transform 0.15s, opacity 0.2s, box-shadow 0.25s;
+}
+
+.btn-sec:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 0 20px var(--accent-glow);
+}
+
+.btn-sec:disabled { opacity: 0.45; cursor: default; }
+
+.btn-sec.ghost {
+    background: transparent;
+    border: 1px solid rgba(255,40,40,0.4);
+}
+
+.s-status {
+    margin-top: 12px;
+    padding: 10px 12px;
+    background: rgba(255,30,30,0.06);
+    border: 1px solid rgba(255,40,40,0.2);
+    border-radius: 10px;
+    font-size: 12px; color: var(--text);
+    white-space: pre-wrap; font-family: 'JetBrains Mono', monospace;
+    line-height: 1.6;
+}
+
+.s-status.hidden { display: none; }
+
+/* ---------------- chat ---------------- */
+
+.chat-log {
+    height: 150px; overflow-y: auto;
+    background: rgba(0,0,0,0.4);
+    border: 1px solid rgba(255,40,40,0.1);
+    border-radius: 10px;
+    padding: 10px;
+    display: flex; flex-direction: column; gap: 6px;
+}
+
+.chat-log .msg {
+    font-size: 13px; line-height: 1.4; word-break: break-word;
+}
+
+.chat-log .msg .from {
+    color: var(--accent); font-weight: 700; margin-right: 8px;
+    font-size: 12px;
+}
+
+.chat-rw { max-width: 640px; }
+
+.chat-form {
+    display: flex; gap: 8px; margin-top: 10px;
+}
+
+.chat-form input {
+    flex: 1;
+    background: rgba(0,0,0,0.45);
+    border: 1px solid rgba(255,40,40,0.15);
+    border-radius: 10px;
+    padding: 9px 12px;
+    color: var(--text); font-size: 13px; outline: none;
+}
+
+.chat-form input:focus { border-color: var(--accent); }
+
+/* ---------------- viewer ---------------- */
+
+.v-form {
+    display: flex; flex-wrap: wrap; gap: 10px;
+    width: 100%; max-width: 640px;
+}
+
+.v-form input {
+    flex: 1; min-width: 180px;
+    background: rgba(0,0,0,0.45);
+    border: 1px solid rgba(255,40,40,0.15);
+    border-radius: 10px;
+    padding: 10px 12px;
+    color: var(--text); font-size: 13px; outline: none;
+}
+
+.v-form input:focus { border-color: var(--accent); }
+
+.v-grid {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 12px;
+}
+
+.v-cell {
+    position: relative;
+    background: var(--surface);
+    border: 1px solid rgba(255,40,40,0.12);
+    border-radius: 12px;
+    overflow: hidden;
+    aspect-ratio: 16/9;
+}
+
+.v-cell img {
+    width: 100%; height: 100%;
+    object-fit: contain;
+    display: block;
+    background: #000;
+}
+
+.v-node {
+    position: absolute; top: 8px; left: 8px; z-index: 2;
+    font-size: 11px; font-weight: 700; color: var(--accent);
+    background: rgba(0,0,0,0.6);
+    padding: 2px 8px; border-radius: 8px;
+    backdrop-filter: blur(4px);
+}

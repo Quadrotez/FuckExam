@@ -50,6 +50,31 @@ jobs:
           prerelease: false
           args: --bundles deb,appimage
 
+  build-relay:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "./relay -> target"
+
+      - name: Build relay
+        run: cargo build --release --manifest-path relay/Cargo.toml
+
+      - name: Test relay
+        run: cargo test --release --manifest-path relay/Cargo.toml
+
+      - name: Upload relay binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuck-exam-relay-linux
+          path: relay/target/release/fuck-exam-relay
+
   # Windows (.exe) понадобится после добавления Windows-бэкенда захвата.
   # Раскомментируй, когда захват под Windows будет реализован:
   # build-windows:

@@ -530,3 +530,57 @@ async fn relay_client(hub: Arc<StreamHub>, url: String, room: String) {
     hub.unregister(id);
     hub.deactivate();
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn jpeg_encode_bgra() {
+        let w = 16usize;
+        let h = 12usize;
+        let stride = w * 4 + 64;
+        let mut buf = vec![0u8; stride * h];
+        for y in 0..h {
+            for x in 0..w {
+                let i = y * stride + x * 4;
+                // BGRA: красный пиксель
+                buf[i] = 0u8; // B
+                buf[i + 1] = 0; // G
+                buf[i + 2] = 200; // R
+                buf[i + 3] = 255; // A
+            }
+        }
+        let jpeg = encode_jpeg(&buf, w, h, stride).expect("jpeg");
+        assert!(jpeg.len() > 100, "jpeg should be non-trivial");
+        assert_eq!(&jpeg[..2], &[0xFF, 0xD8], "SOI marker");
+        assert!(jpeg.ends_with(&[0xFF, 0xD9]), "EOI marker");
+    }
+
+    #[test]
+    fn jpeg_bad_dims() {
+        assert!(encode_jpeg(&[], 0, 10, 40).is_none());
+    }
+
+    #[test]
+    fn room_is_hex() {
+        let r = gen_room();
+        assert_eq!(r.len(), 8);
+        assert!(r.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn event_to_message_binary_prefix() {
+        let m = event_to_message(&ClientEvent::Video {
+            node: 149,
+            jpeg: vec![0xAA, 0xBB],
+        });
+        match m {
+            Message::Binary(b) => {
+                assert_eq!(&b[..4], &[149u8, 0, 0, 0], "u32LE node id");
+                assert_eq!(&b[4..], &[0xAA, 0xBB]);
+            }
+            _ => panic!("expected binary"),
+        }
+    }
+}
