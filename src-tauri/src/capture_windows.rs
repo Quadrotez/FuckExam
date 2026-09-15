@@ -127,12 +127,9 @@ impl GraphicsCaptureApiHandler for Capture {
         }
 
         let mut buffer = frame.buffer()?;
-        let mut rows = Vec::new();
-        let pixels = buffer.as_nopadding_buffer(&mut rows);
+        let pixels = buffer.as_raw_buffer();
         let mut data = Vec::with_capacity((self.width * self.height * 4) as usize);
-        for row in pixels {
-            data.extend_from_slice(row);
-        }
+        data.extend_from_slice(pixels);
 
         if self.encoder.is_none() {
             self.encoder = Some(spawn_ffmpeg(
@@ -222,10 +219,6 @@ pub async fn start_recording(
         return Err("запись уже идёт".into());
     }
 
-    let item = GraphicsCapturePicker::pick_item()
-        .map_err(|e| format!("Windows Graphics Capture: {e}"))?
-        .ok_or_else(|| "окно не выбрано".to_string())?;
-    let size = item.size().map_err(|e| format!("capture item size: {e}"))?;
     let dir = output_dir()?;
     let output = dir.join(format!("fuckexam_win1_{}.mp4", stamp()));
     let stop = Arc::new(AtomicBool::new(false));
@@ -236,27 +229,34 @@ pub async fn start_recording(
         .and_then(|a| a.path().resource_dir().ok())
         .map(|p| p.join("ffmpeg.exe"))
         .unwrap_or_else(|| PathBuf::from("ffmpeg.exe"));
-    let settings = Settings::new(
-        item,
-        CursorCaptureSettings::Default,
-        DrawBorderSettings::Default,
-        SecondaryWindowSettings::Default,
-        MinimumUpdateIntervalSettings::Default,
-        DirtyRegionSettings::Default,
-        ColorFormat::Bgra8,
-        (size.0, size.1, stop, hub, output, ffmpeg),
-    );
-
     let thread = std::thread::spawn(move || {
-        if let Err(e) = Capture::start(settings) {
-            eprintln!("[fuckexam] Windows capture: {e}");
-            thread_stop.store(true, Ordering::Relaxed);
+        let result = (|| -> Result<(), String> {
+            let item = GraphicsCapturePicker::pick_item()
+                .map_err(|e| format!("Windows Graphics Capture: {e}"))?
+                .ok_or_else(|| "окно не выбрано".to_string())?;
+            let size = item.size().map_err(|e| format!("capture item size: {e}"))?;
+            let settings = Settings::new(
+                item,
+                CursorCaptureSettings::Default,
+                DrawBorderSettings::Default,
+                SecondaryWindowSettings::Default,
+                MinimumUpdateIntervalSettings::Default,
+                DirtyRegionSettings::Default,
+                ColorFormat::Bgra8,
+                (size.0, size.1, thread_stop.clone(), hub, output, ffmpeg),
+            );
+            Capture::start(settings).map_err(|e| format!("Windows capture: {e}"))?;
+            Ok(())
+        })();
+        if let Err(e) = result {
+            eprintln!("[fuckexam] {e}");
         }
+        thread_stop.store(true, Ordering::Relaxed);
     });
     let info = WindowInfo {
         node_id: 1,
-        width: size.0,
-        height: size.1,
+        width: 0,
+        height: 0,
         output: output_thread.display().to_string(),
     };
     *state.inner.lock().map_err(|_| "lock")? = Some(RecorderInner {
