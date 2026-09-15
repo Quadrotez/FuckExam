@@ -1,5 +1,9 @@
 services:
   relay:
+    # автособранный образ на каждый релиз: ghcr.io/quadrotez/fuck-exam-relay
+    # (docker compose up --build пересоберёт локально из ./relay, как раньше;
+    #  docker compose pull заберёт готовый из реестра)
+    image: ghcr.io/quadrotez/fuck-exam-relay:latest
     build: ./relay
     container_name: fuck-exam-relay
     restart: unless-stopped
