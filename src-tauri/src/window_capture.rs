@@ -264,7 +264,7 @@ fn spawn_ffmpeg(w: u32, h: u32, out: &Path) -> Result<Child, String> {
             "-i",
             "pipe:0",
             "-vf",
-            "format=yuv420p",
+            "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
             "-c:v",
             "libx264",
             "-preset",
