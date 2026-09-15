@@ -3,7 +3,11 @@ services:
     build: ./relay
     container_name: fuck-exam-relay
     restart: unless-stopped
+    # host-сеть: контейнер видит интерфейсы хоста, поэтому на старте
+    # автоматически определяется и печатается реальный IP сервера.
+    # (в bridge-сети getifaddrs вернул бы внутренний 172.17.x.x)
+    network_mode: host
     environment:
       RELAY_PORT: "7444"
-    ports:
-      - "7444:7444"
+      # Если авто-определение не подходит (сервер за NAT/домен) — задайте вручную:
+      # RELAY_HOST: "exam.example.com"
