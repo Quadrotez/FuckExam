@@ -1,7 +1,7 @@
 use std::{
     os::fd::OwnedFd,
     path::PathBuf,
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -12,6 +12,7 @@ use ashpd::desktop::Session;
 use enumflags2::BitFlags;
 use serde::Serialize;
 
+use crate::streaming::StreamHub;
 use crate::window_capture::WindowCapture;
 
 #[derive(Clone, Serialize)]
@@ -35,12 +36,14 @@ pub struct RecordingSnapshot {
 
 pub struct Recorder {
     pub inner: Mutex<Option<RecorderInner>>,
+    pub hub: Arc<StreamHub>,
 }
 
 impl Default for Recorder {
     fn default() -> Self {
         Self {
             inner: Mutex::new(None),
+            hub: Arc::new(StreamHub::default()),
         }
     }
 }
@@ -149,7 +152,7 @@ pub async fn start_recording(state: &Recorder) -> Result<String, String> {
     for (s, fd) in picked.streams.iter().zip(picked.fds) {
         let node = s.pipe_wire_node_id();
         let out = dir.join(format!("fuckexam_win{node}_{stamp}.mp4"));
-        let cap = WindowCapture::spawn(fd, node, &out)?;
+        let cap = WindowCapture::spawn(fd, node, &out, Some(state.hub.clone()))?;
         windows.push(cap);
     }
 
@@ -248,7 +251,7 @@ pub fn run_cli_record() {
         let dir = output_dir().expect("output dir");
         let stamp = stamp();
         let out = dir.join(format!("fuckexam_selftest_{node_id}_{stamp}.mp4"));
-        let mut cap = crate::window_capture::WindowCapture::spawn(fd, node_id, &out)
+        let mut cap = crate::window_capture::WindowCapture::spawn(fd, node_id, &out, None)
             .expect("spawn");
         let secs = cli_duration();
         println!("SELFTEST: capture node {node_id} for {secs}s -> {}", out.display());

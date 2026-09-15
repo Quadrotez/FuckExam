@@ -16,6 +16,8 @@ use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 use gstreamer_video as gst_video;
 
+use crate::streaming::{self, StreamHub};
+
 #[derive(Default)]
 struct FrameState {
     w: u32,
@@ -33,7 +35,12 @@ pub struct WindowCapture {
 }
 
 impl WindowCapture {
-    pub fn spawn(fd: OwnedFd, node_id: u32, out: &Path) -> Result<WindowCapture, String> {
+    pub fn spawn(
+        fd: OwnedFd,
+        node_id: u32,
+        out: &Path,
+        stream: Option<Arc<StreamHub>>,
+    ) -> Result<WindowCapture, String> {
         let output = out.display().to_string();
         let stop = Arc::new(AtomicBool::new(false));
         let size = Arc::new(Mutex::new((0u32, 0u32)));
@@ -41,7 +48,7 @@ impl WindowCapture {
         let size2 = size.clone();
         let out2 = out.to_path_buf();
         let thread = std::thread::spawn(move || {
-            if let Err(e) = run(fd, node_id, &out2, stop2, size2) {
+            if let Err(e) = run(fd, node_id, &out2, stop2, size2, stream) {
                 eprintln!("[fuckexam] window {node_id}: {e}");
             }
         });
@@ -74,6 +81,7 @@ fn run(
     out: &Path,
     stop: Arc<AtomicBool>,
     size: Arc<Mutex<(u32, u32)>>,
+    stream: Option<Arc<StreamHub>>,
 ) -> Result<(), String> {
     let _fd = fd;
     gst::init().map_err(|e| format!("gst init: {e}"))?;
@@ -138,8 +146,16 @@ fn run(
     let writer_frame = frame.clone();
     let writer_node = node_id;
     let writer_out = out.to_path_buf();
+    let writer_stream = stream.clone();
     std::thread::spawn(move || {
-        writer_loop(writer_node, writer_out, writer_frame, writer_size, writer_stop);
+        writer_loop(
+            writer_node,
+            writer_out,
+            writer_frame,
+            writer_size,
+            writer_stop,
+            writer_stream,
+        );
     });
 
     while !stop.load(Ordering::Relaxed) {
@@ -185,6 +201,9 @@ fn run(
         }
     }
 
+    if let Some(hub) = &stream {
+        hub.announce_end(node_id);
+    }
     let _ = pipeline.set_state(gst::State::Null);
 
     if let Some(log) = error_log.lock().unwrap().clone() {
@@ -199,9 +218,11 @@ fn writer_loop(
     frame: Arc<Mutex<FrameState>>,
     size: Arc<Mutex<(u32, u32)>>,
     stop: Arc<AtomicBool>,
+    stream: Option<Arc<StreamHub>>,
 ) {
     let mut child: Option<Child> = None;
     let mut next = Instant::now();
+    let mut next_push = Instant::now();
 
     while !stop.load(Ordering::Relaxed) {
         let now = Instant::now();
@@ -211,18 +232,22 @@ fn writer_loop(
         }
         next = now + Duration::from_millis(33);
 
-        let f = frame.lock().unwrap();
-        if !f.ready {
-            continue;
-        }
-
-        {
-            let mut sz = size.lock().unwrap();
-            *sz = (f.w, f.h);
-        }
+        let (w, h, data) = {
+            let f = frame.lock().unwrap();
+            if !f.ready {
+                continue;
+            }
+            {
+                let mut sz = size.lock().unwrap();
+                *sz = (f.w, f.h);
+            }
+            let len = f.bytes.len();
+            let data = f.bytes[..len].to_vec();
+            (f.w, f.h, data)
+        };
 
         if child.is_none() {
-            match spawn_ffmpeg(f.w, f.h, &out) {
+            match spawn_ffmpeg(w, h, &out) {
                 Ok(c) => child = Some(c),
                 Err(e) => {
                     eprintln!("[fuckexam] window {node_id}: ffmpeg: {e}");
@@ -233,12 +258,27 @@ fn writer_loop(
 
         if let Some(c) = child.as_mut() {
             if let Some(stdin) = c.stdin.as_mut() {
-                if let Err(e) = stdin.write_all(&f.bytes) {
+                if let Err(e) = stdin.write_all(&data) {
                     eprintln!("[fuckexam] window {node_id}: write: {e}");
                     break;
                 }
             }
         }
+
+        let now2 = Instant::now();
+        if let Some(hub) = &stream {
+            if now2 >= next_push {
+                next_push = now2 + Duration::from_millis(100);
+                let stride = data.len() / h as usize;
+                if let Some(jpeg) = streaming::encode_jpeg(&data, w as usize, h as usize, stride) {
+                    hub.push_video(node_id, w, h, jpeg);
+                }
+            }
+        }
+    }
+
+    if let Some(hub) = &stream {
+        hub.announce_end(node_id);
     }
 
     if let Some(mut c) = child {
