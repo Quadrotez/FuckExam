@@ -358,6 +358,7 @@ const vChatForm = $('v-chat-form');
 const vChatInput = $('v-chat-input');
 
 let vsock = null;
+let vFrames = 0;
 const vstreams = new Map(); // node -> { img, stale }
 
 function vSetStatus(text) {
@@ -414,13 +415,49 @@ function vReconcile(streams) {
 }
 
 function vHandleBinary(buf) {
-    if (buf.byteLength < 4) return;
-    const dv = new DataView(buf);
+    if (buf.byteLength < 5) return;
+    const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
     const node = dv.getUint32(0, true);
     const jpeg = buf.slice(4);
     const entry = vEnsureImg(node);
-    if (entry.img.src) URL.revokeObjectURL(entry.img.src);
-    entry.img.src = URL.createObjectURL(new Blob([jpeg], { type: 'image/jpeg' }));
+    vFrames++;
+    if (vFrames % 5 === 0) {
+        vSetStatus(`получено кадров: ${vFrames}`);
+    }
+    const url = URL.createObjectURL(new Blob([jpeg], { type: 'image/jpeg' }));
+    if (entry.img.src) {
+        URL.revokeObjectURL(entry.img.src);
+    }
+    if (entry.usingData) {
+        URL.revokeObjectURL(url);
+        return;
+    }
+    const img = entry.img;
+    img.onerror = () => {
+        if (img.src && img.src.startsWith('blob:')) URL.revokeObjectURL(img.src);
+        const b64 = arrayToBase64(jpeg);
+        img.src = 'data:image/jpeg;base64,' + b64;
+        entry.usingData = true;
+    };
+    img.src = url;
+}
+
+function arrayToBase64(u8) {
+    let s = '';
+    const CH = 0x8000;
+    for (let i = 0; i < u8.length; i += CH) {
+        s += String.fromCharCode.apply(null, u8.subarray(i, i + CH));
+    }
+    return btoa(s);
+}
+
+function vHandleBytes(buf) {
+    // бинарный кадр [u32LE node] + jpeg
+    try {
+        vHandleBinary(buf);
+    } catch (e) {
+        if (window.__TAURI__) vSetStatus('ошибка кадра: ' + String(e));
+    }
 }
 
 function vHandleMsg(evt) {
@@ -434,6 +471,7 @@ function vHandleMsg(evt) {
         switch (msg.type) {
             case 'welcome':
                 vSetStatus(`подключено (${msg.streams.length} стримов)`);
+                vFrames = 0;
                 vReconcile(msg.streams);
                 if (msg.history) {
                     msg.history.forEach((m) =>
@@ -463,8 +501,14 @@ function vHandleMsg(evt) {
         }
         return;
     }
-    // binary
-    vHandleBinary(new Uint8Array(evt.data));
+    const d = evt.data;
+    if (typeof ArrayBuffer !== 'undefined' && d instanceof ArrayBuffer) {
+        vHandleBytes(new Uint8Array(d));
+    } else if (typeof Blob !== 'undefined' && d instanceof Blob) {
+        d.arrayBuffer().then((ab) => vHandleBytes(new Uint8Array(ab))).catch(() => {});
+    } else if (ArrayBuffer.isView(d)) {
+        vHandleBytes(new Uint8Array(d.buffer, d.byteOffset, d.byteLength));
+    }
 }
 
 function doConnect() {
@@ -509,6 +553,7 @@ function vResetConn() {
     vsock = null;
     vConnect.disabled = false;
     vDisconnect.disabled = true;
+    vFrames = 0;
     for (const node of [...vstreams.keys()]) vRemoveImg(node);
 }
 
