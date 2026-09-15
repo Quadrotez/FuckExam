@@ -15,7 +15,7 @@ function showView(name) {
         refresh();
     }
     if (name === 'viewer') {
-        vDisconnect();
+        doDisconnect();
     }
 }
 
@@ -408,7 +408,7 @@ function vHandleMsg(evt) {
     vHandleBinary(new Uint8Array(evt.data));
 }
 
-function vConnect() {
+function doConnect() {
     const url = vUrl.value.trim();
     if (!url) {
         vSetStatus('введите адрес ws://…');
@@ -453,7 +453,7 @@ function vResetConn() {
     for (const node of [...vstreams.keys()]) vRemoveImg(node);
 }
 
-function vDisconnect() {
+function doDisconnect() {
     if (vsock) {
         try {
             vsock.close();
@@ -462,8 +462,8 @@ function vDisconnect() {
     vResetConn();
 }
 
-vConnect.addEventListener('click', vConnect);
-vDisconnect.addEventListener('click', vDisconnect);
+vConnect.addEventListener('click', doConnect);
+vDisconnect.addEventListener('click', doDisconnect);
 
 vChatForm.addEventListener('submit', (e) => {
     e.preventDefault();
