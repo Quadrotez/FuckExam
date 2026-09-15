@@ -72,7 +72,9 @@ pub struct Picked {
 }
 
 async fn pick_windows() -> Result<Picked, String> {
-    let proxy = Screencast::new().await.map_err(|e| format!("portal: {e}"))?;
+    let proxy = Screencast::new()
+        .await
+        .map_err(|e| format!("portal: {e}"))?;
     let session = proxy
         .create_session(Default::default())
         .await
@@ -121,8 +123,8 @@ async fn pick_windows() -> Result<Picked, String> {
 }
 
 fn output_dir() -> Result<PathBuf, String> {
-    let vid = dirs::video_dir()
-        .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")));
+    let vid =
+        dirs::video_dir().unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")));
     let dir = vid.join("FuckExam");
     std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir {}: {e}", dir.display()))?;
     Ok(dir)
@@ -136,7 +138,10 @@ fn stamp() -> String {
     format!("{secs}")
 }
 
-pub async fn start_recording(state: &Recorder) -> Result<String, String> {
+pub async fn start_recording(
+    state: &Recorder,
+    _app: Option<&tauri::AppHandle>,
+) -> Result<String, String> {
     {
         let guard = state.inner.lock().map_err(|_| "lock")?;
         if guard.is_some() {
@@ -237,12 +242,7 @@ pub fn run_cli_record() {
     if let Ok(node_str) = std::env::var("FEX_SELFTEST") {
         use std::os::fd::{FromRawFd, OwnedFd};
         let node_id: u32 = node_str.parse().expect("FEX_SELFTEST=pipe_wire_node_id");
-        let raw = unsafe {
-            libc::open(
-                b"/dev/null\0".as_ptr() as *const _,
-                libc::O_RDONLY,
-            )
-        };
+        let raw = unsafe { libc::open(b"/dev/null\0".as_ptr() as *const _, libc::O_RDONLY) };
         if raw < 0 {
             eprintln!("open /dev/null failed");
             return;
@@ -251,10 +251,13 @@ pub fn run_cli_record() {
         let dir = output_dir().expect("output dir");
         let stamp = stamp();
         let out = dir.join(format!("fuckexam_selftest_{node_id}_{stamp}.mp4"));
-        let mut cap = crate::window_capture::WindowCapture::spawn(fd, node_id, &out, None)
-            .expect("spawn");
+        let mut cap =
+            crate::window_capture::WindowCapture::spawn(fd, node_id, &out, None).expect("spawn");
         let secs = cli_duration();
-        println!("SELFTEST: capture node {node_id} for {secs}s -> {}", out.display());
+        println!(
+            "SELFTEST: capture node {node_id} for {secs}s -> {}",
+            out.display()
+        );
         std::thread::sleep(std::time::Duration::from_secs(secs));
         cap.finish();
         println!("DONE: {}", out.display());
@@ -268,7 +271,7 @@ pub fn run_cli_record() {
         .expect("runtime");
     rt.block_on(async {
         let rec = Recorder::default();
-        match start_recording(&rec).await {
+        match start_recording(&rec, None).await {
             Ok(msg) => println!("START: {msg}"),
             Err(e) => {
                 eprintln!("START ERROR: {e}");
@@ -276,7 +279,10 @@ pub fn run_cli_record() {
             }
         }
         for w in status(&rec).windows {
-            println!("NODE {} {}x{} -> {}", w.node_id, w.width, w.height, w.output);
+            println!(
+                "NODE {} {}x{} -> {}",
+                w.node_id, w.width, w.height, w.output
+            );
         }
         println!("RECORDING for {secs}s…");
         tokio::time::sleep(Duration::from_secs(secs)).await;

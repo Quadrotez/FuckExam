@@ -1,6 +1,9 @@
 use std::{
     collections::HashMap,
-    sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     time::Duration,
 };
 
@@ -29,11 +32,17 @@ pub struct StreamEntry {
 
 #[derive(Clone, Debug)]
 pub enum ClientEvent {
-    Welcome { streams: Vec<StreamEntry>, history: Vec<ChatMsg> },
+    Welcome {
+        streams: Vec<StreamEntry>,
+        history: Vec<ChatMsg>,
+    },
     Streams(Vec<StreamEntry>),
     StreamEnd(u32),
     Chat(ChatMsg),
-    Video { node: u32, jpeg: Vec<u8> },
+    Video {
+        node: u32,
+        jpeg: Vec<u8>,
+    },
 }
 
 #[derive(Clone, Serialize)]
@@ -116,14 +125,18 @@ fn event_to_message(ev: &ClientEvent) -> Message {
             v.extend_from_slice(jpeg);
             Message::Binary(v.into())
         }
-        ClientEvent::Streams(list) => {
-            Message::Text(json!({ "type": "streams", "streams": list }).to_string().into())
-        }
+        ClientEvent::Streams(list) => Message::Text(
+            json!({ "type": "streams", "streams": list })
+                .to_string()
+                .into(),
+        ),
         ClientEvent::StreamEnd(id) => {
             Message::Text(json!({ "type": "stream-end", "id": id }).to_string().into())
         }
         ClientEvent::Chat(m) => Message::Text(
-            json!({ "type": "chat", "from": m.from, "text": m.text }).to_string().into(),
+            json!({ "type": "chat", "from": m.from, "text": m.text })
+                .to_string()
+                .into(),
         ),
         ClientEvent::Welcome { streams, history } => Message::Text(
             json!({ "type": "welcome", "streams": streams, "history": history })
@@ -178,7 +191,12 @@ pub fn encode_jpeg(bgra: &[u8], w: usize, h: usize, stride: usize) -> Option<Vec
 /// Кадр для стрима: при большом размере уменьшает до max_dim по большей стороне
 /// (WebKit быстрее декодирует маленькие JPEG, а зрители смотрят в окне ~500px).
 /// Возвращает (w, h, jpeg) реальных размеров JPEG.
-pub fn encode_stream_frame(bgra: &[u8], w: usize, h: usize, stride: usize) -> Option<(u32, u32, Vec<u8>)> {
+pub fn encode_stream_frame(
+    bgra: &[u8],
+    w: usize,
+    h: usize,
+    stride: usize,
+) -> Option<(u32, u32, Vec<u8>)> {
     let max_dim = std::env::var("FEX_STREAM_MAX_W")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
@@ -208,49 +226,24 @@ pub fn encode_stream_frame(bgra: &[u8], w: usize, h: usize, stride: usize) -> Op
 }
 
 pub fn local_addresses() -> Result<Vec<String>, String> {
-    let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
-    if unsafe { libc::getifaddrs(&mut list) } != 0 {
-        return Err("getifaddrs failed".into());
-    }
     let mut out = Vec::new();
-    let mut cur = list;
-    while !cur.is_null() {
-        let ifa = unsafe { &*cur };
-        if !ifa.ifa_addr.is_null() {
-            let family = unsafe { (*ifa.ifa_addr).sa_family } as i32;
-            if family == libc::AF_INET {
-                let sin = ifa.ifa_addr as *const libc::sockaddr_in;
-                let addr = unsafe { &*sin }.sin_addr;
-if addr.s_addr != 0 {
-                // s_addr уже в сетевом порядке; порядок байтов в памяти = октеты IP
-                let b = addr.s_addr.to_ne_bytes();
-                let ip = format!("{}.{}.{}.{}", b[0], b[1], b[2], b[3]);
-                    if !ip.starts_with("127.")
-                        && !ip.starts_with("0.")
-                        && !ip.starts_with("169.254.")
-                    {
-                        out.push(ip);
-                    }
-                }
+    for iface in if_addrs::get_if_addrs().map_err(|e| format!("get interfaces: {e}"))? {
+        if let if_addrs::IfAddr::V4(addr) = iface.addr {
+            let ip = addr.ip;
+            if !ip.is_loopback() && !ip.is_unspecified() && !ip.is_link_local() {
+                out.push(ip.to_string());
             }
         }
-        cur = ifa.ifa_next;
     }
-    unsafe { libc::freeifaddrs(list) };
     Ok(out)
 }
 
 fn gen_room() -> String {
-    use std::io::Read;
-    let mut buf = [0u8; 4];
-    let ok = std::fs::File::open("/dev/urandom")
-        .and_then(|mut f| f.read_exact(&mut buf))
-        .is_ok();
-    if ok {
-        format!("{:08x}", u32::from_le_bytes(buf))
-    } else {
-        format!("{:08x}", std::process::id())
-    }
+    let ticks = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or_default();
+    format!("{:08x}", ticks ^ std::process::id() as u64)
 }
 
 /// Проверка доступности relay: подключаемся как зритель в тестовую комнату
@@ -290,7 +283,11 @@ pub async fn ping_relay(url: String) -> Result<String, String> {
 }
 
 impl Streaming {
-    pub async fn arm_local(&self, app: AppHandle, port: Option<u16>) -> Result<StreamStatus, String> {
+    pub async fn arm_local(
+        &self,
+        app: AppHandle,
+        port: Option<u16>,
+    ) -> Result<StreamStatus, String> {
         let port = port.unwrap_or_else(|| {
             std::env::var("FEX_PORT")
                 .ok()
@@ -497,7 +494,9 @@ async fn run_viewer(
         _ => {
             let _ = sink
                 .send(Message::Text(
-                    json!({"type":"error","error":"role must be viewer"}).to_string().into(),
+                    json!({"type":"error","error":"role must be viewer"})
+                        .to_string()
+                        .into(),
                 ))
                 .await;
             return Err("bad hello".into());
@@ -690,7 +689,7 @@ mod tests {
         std::fs::write(path, &jpeg).expect("write");
     }
 
-#[test]
+    #[test]
     fn local_addresses_octet_order() {
         // эндпоинты, которые реально попадают в локальную сеть
         if let Ok(list) = local_addresses() {
@@ -713,7 +712,10 @@ mod tests {
         let stride = w * 4;
         let mut buf = vec![128u8; stride * h];
         let r = encode_stream_frame(&buf, w, h, stride).expect("scaled jpeg");
-        assert_eq!(r.0 as usize, 1280, "должно ужаться до 1280 по большей стороне");
+        assert_eq!(
+            r.0 as usize, 1280,
+            "должно ужаться до 1280 по большей стороне"
+        );
         assert!(r.1 > 0 && r.2.len() > 100);
         std::fs::write("/tmp/fex_scaled.jpg", &r.2).ok();
         std::env::remove_var("FEX_STREAM_MAX_W");
@@ -781,7 +783,9 @@ mod tests {
 
         // чат от ws-viewer доходит наблюдателю
         ws.send(Message::Text(
-            json!({"type":"chat","from":"Ana","text":"preved"}).to_string().into(),
+            json!({"type":"chat","from":"Ana","text":"preved"})
+                .to_string()
+                .into(),
         ))
         .await
         .unwrap();
@@ -892,7 +896,11 @@ mod tests {
             }
             // отвечаем welcome
             let _ = sink
-                .send(Message::Text(json!({"type":"welcome","streams":[],"history":[]}).to_string().into()))
+                .send(Message::Text(
+                    json!({"type":"welcome","streams":[],"history":[]})
+                        .to_string()
+                        .into(),
+                ))
                 .await;
             let _ = tokio::time::timeout(Duration::from_secs(2), rstream.next()).await;
         });
@@ -911,7 +919,10 @@ mod tests {
         drop(listener);
 
         let res = ping_relay(format!("ws://{addr}")).await;
-        assert!(res.is_err(), "ping к закрытому порту должен падать: {res:?}");
+        assert!(
+            res.is_err(),
+            "ping к закрытому порту должен падать: {res:?}"
+        );
     }
 
     #[tokio::test]
@@ -922,7 +933,6 @@ mod tests {
 
     #[tokio::test]
     async fn relay_client_pushes_and_receives_chat() {
-
         let hub = Arc::new(StreamHub::default());
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -949,7 +959,9 @@ mod tests {
             // инжектим чат в сторону записывающего
             let _ = sink
                 .send(Message::Text(
-                    json!({"type":"chat","from":"Prof","text":"oi"}).to_string().into(),
+                    json!({"type":"chat","from":"Prof","text":"oi"})
+                        .to_string()
+                        .into(),
                 ))
                 .await;
             // слушаем бинарные кадры от записывающего

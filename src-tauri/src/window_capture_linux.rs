@@ -106,15 +106,16 @@ fn run(
         .map_err(|e| format!("appsink: {e}"))?;
     sink.set_property(
         "caps",
-        gst::Caps::builder("video/x-raw").field("format", "BGRA").build(),
+        gst::Caps::builder("video/x-raw")
+            .field("format", "BGRA")
+            .build(),
     );
     sink.set_property("sync", false);
     sink.set_property("drop", false);
     sink.set_property("max-buffers", 8u32);
 
     let _ = pipeline.add_many(&[&src, &convert, &sink]);
-    gst::Element::link_many(&[&src, &convert, &sink])
-        .map_err(|e| format!("link: {e}"))?;
+    gst::Element::link_many(&[&src, &convert, &sink]).map_err(|e| format!("link: {e}"))?;
 
     let error_log: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let error_log2 = error_log.clone();
@@ -130,7 +131,9 @@ fn run(
             gst::BusSyncReply::Drop
         });
 
-    pipeline.set_state(gst::State::Playing).map_err(|e| format!("play: {e}"))?;
+    pipeline
+        .set_state(gst::State::Playing)
+        .map_err(|e| format!("play: {e}"))?;
 
     if std::env::var_os("FEX_DEBUG").is_some() {
         eprintln!("[fuckexam] window {node_id}: gst pipeline playing");

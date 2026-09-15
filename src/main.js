@@ -2,6 +2,21 @@ const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
 const $ = (id) => document.getElementById(id);
+let runtimePlatform = null;
+
+async function checkPlatformAtStartup() {
+    try {
+        runtimePlatform = await invoke('platform_info');
+        document.documentElement.dataset.os = runtimePlatform.os;
+        if (!runtimePlatform.recorder) {
+            $('btn').disabled = true;
+            $('path-hint').textContent = `Запись экранов не поддерживается на ОС: ${runtimePlatform.os}`;
+        }
+        console.info('[fuckexam] platform:', runtimePlatform);
+    } catch (e) {
+        console.error('[fuckexam] platform check failed:', e);
+    }
+}
 
 /* ---------------- view router ---------------- */
 
@@ -742,5 +757,6 @@ vChatForm.addEventListener('submit', (e) => {
 /* ---------------- boot ---------------- */
 
 loadSettings();
+checkPlatformAtStartup();
 refresh();
 showView('landing');
