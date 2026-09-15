@@ -9,5 +9,7 @@ services:
     network_mode: host
     environment:
       RELAY_PORT: "7444"
-      # Если авто-определение не подходит (сервер за NAT/домен) — задайте вручную:
-      # RELAY_HOST: "exam.example.com"
+      # Сервер за NAT/frp (исходящий IP не равен адресу подключения).
+      # Задайте публичный адрес frp-сервера (и порт, если он отличается):
+      # RELAY_HOST: "121.5.x.x"
+      # RELAY_PUB_PORT: "7444"

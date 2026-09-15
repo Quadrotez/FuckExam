@@ -139,39 +139,56 @@ fn local_ips() -> Vec<String> {
 
 #[tokio::main]
 async fn main() {
-    let port = std::env::var("RELAY_PORT")
+    let listen_port = std::env::var("RELAY_PORT")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(fuck_exam_relay::DEFAULT_PORT);
-    let addr = format!("0.0.0.0:{port}");
+    let pub_port = std::env::var("RELAY_PUB_PORT")
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(listen_port);
+    let addr = format!("0.0.0.0:{listen_port}");
 
     let host_override = std::env::var("RELAY_HOST").ok();
 
-    let mut ips = Vec::new();
-    if host_override.is_none() {
-        if let Some(pub_ip) = detect_public_ip().await {
-            println!("public IP: {pub_ip}");
-            ips.push(pub_ip);
-        }
-        ips.extend(local_ips());
-    }
-
-    let explicit = host_override.is_some();
-    let display_hosts: Vec<String> = match host_override {
-        Some(h) => vec![h],
-        None if ips.is_empty() => vec!["<ip>".into()],
-        None => ips,
-    };
-
     println!("FuckExam relay listening on {addr}");
-    for h in &display_hosts {
-        println!("  recorder: ws://{h}:{port}   room: <любая>");
-        println!("  viewer:   ws://{h}:{port}   room: <та же>");
-    }
-    if explicit {
-        println!("  (RELAY_HOST задан вручную; авто-определение пропущено)");
-    } else if display_hosts.iter().any(|h| h == "<ip>") {
-        eprintln!("  WARNING: не удалось определить IP, задайте RELAY_HOST вручную");
+
+    match host_override {
+        // За NAT/frp: явно задан публичный адрес, к которому подключаются зрители.
+        Some(host) => {
+            println!("  зрителям (за NAT/frp, ws://{host}:{pub_port}):");
+            println!("    recorder: ws://{host}:{pub_port}   room: <любая>");
+            println!("    viewer:   ws://{host}:{pub_port}   room: <та же>");
+            let locals = local_ips();
+            if !locals.is_empty() {
+                println!("  локально (в той же сети):");
+                for h in locals {
+                    println!("    recorder: ws://{h}:{listen_port}   room: <любая>");
+                    println!("    viewer:   ws://{h}:{listen_port}   room: <та же>");
+                }
+            }
+            println!("  (RELAY_HOST задан вручную; авто-определение внешнего IP пропущено)");
+            if pub_port != listen_port {
+                println!("  (RELAY_PUB_PORT={pub_port} отличен от RELAY_PORT={listen_port} — убедитесь, что frp/NAT пробрасывает именно {pub_port} на {listen_port})");
+            }
+        }
+        None => {
+            let mut ips = Vec::new();
+            if let Some(pub_ip) = detect_public_ip().await {
+                ips.push(pub_ip);
+            }
+            ips.extend(local_ips());
+
+            if ips.is_empty() {
+                eprintln!("  WARNING: не удалось определить IP, задайте RELAY_HOST вручную");
+                eprintln!("  (например, если сервер за NAT/frp): RELAY_HOST=1.2.3.4");
+            } else {
+                for h in &ips {
+                    println!("  recorder: ws://{h}:{pub_port}   room: <любая>");
+                    println!("  viewer:   ws://{h}:{pub_port}   room: <та же>");
+                }
+            }
+        }
     }
 
     if let Err(e) = fuck_exam_relay::serve(&addr).await {
