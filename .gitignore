@@ -1,5 +1,6 @@
 temp/
 dist/
 src-tauri/target/
+relay/target/
 src-tauri/gen/
 node_modules/
