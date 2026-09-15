@@ -1,0 +1,96 @@
+name: build
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  # Linux: бинарник + .deb + .AppImage
+  build-linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl wget file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Build bundles
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # linuxdeploy тянет устаревший strip, который падает на .relr.dyn (новые дистры)
+          NO_STRIP: "1"
+        with:
+          projectPath: "./src-tauri"
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          releaseName: FuckExam ${{ github.ref_name }}
+          releaseDraft: true
+          prerelease: false
+          args: --bundles deb,appimage
+
+  # Windows (.exe) понадобится после добавления Windows-бэкенда захвата.
+  # Раскомментируй, когда захват под Windows будет реализован:
+  # build-windows:
+  #   runs-on: windows-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - name: Setup Rust
+  #       uses: dtolnay/rust-toolchain@stable
+  #     - name: Cache cargo
+  #       uses: Swatinem/rust-cache@v2
+  #       with:
+  #         workspaces: "./src-tauri -> target"
+  #     - name: Build bundles
+  #       uses: tauri-apps/tauri-action@v0
+  #       env:
+  #         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  #       with:
+  #         projectPath: "./src-tauri"
+  #         tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+  #         releaseName: FuckExam ${{ github.ref_name }}
+  #         releaseDraft: true
+  #         prerelease: false
+  #         args: --bundles nsis
+
+  # macOS (.dmg) — по запросу.
+  # build-macos:
+  #   runs-on: macos-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - name: Setup Rust
+  #       uses: dtolnay/rust-toolchain@stable
+  #     - name: Cache cargo
+  #       uses: Swatinem/rust-cache@v2
+  #       with:
+  #         workspaces: "./src-tauri -> target"
+  #     - name: Build bundles
+  #       uses: tauri-apps/tauri-action@v0
+  #       env:
+  #         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  #       with:
+  #         projectPath: "./src-tauri"
+  #         tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+  #         releaseName: FuckExam ${{ github.ref_name }}
+  #         releaseDraft: true
+  #         prerelease: false
+  #         args: --bundles app,dmg

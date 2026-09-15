@@ -3,6 +3,7 @@ name = "fuck-exam"
 version = "0.1.0"
 description = "FuckExam — запись выбранных окон в видео"
 edition = "2021"
+default-run = "fuck-exam"
 
 [lib]
 name = "fuck_exam_lib"
