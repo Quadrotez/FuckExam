@@ -376,18 +376,27 @@ function vChatAppend(html) {
     }
 }
 
-function vEnsureImg(node) {
+function vEnsureImg(node, w, h) {
     let entry = vstreams.get(node);
     if (!entry) {
         const wrap = document.createElement('div');
         wrap.className = 'v-cell';
         wrap.innerHTML = `<span class="v-node">node ${node}</span>`;
-        const img = document.createElement('img');
-        img.alt = `node ${node}`;
-        wrap.appendChild(img);
+        const canvas = document.createElement('canvas');
+        canvas.width = 640;
+        canvas.height = 360;
+        wrap.appendChild(canvas);
         vGrid.appendChild(wrap);
-        entry = { img, wrap };
+        entry = { canvas, wrap, rendering: false, pending: null };
         vstreams.set(node, entry);
+    }
+    if (w && h) {
+        const cw = Math.min(w, 960);
+        const ch = Math.max(1, Math.round((h / w) * cw));
+        if (entry.canvas.width !== cw || entry.canvas.height !== ch) {
+            entry.canvas.width = cw;
+            entry.canvas.height = ch;
+        }
     }
     return entry;
 }
@@ -395,7 +404,6 @@ function vEnsureImg(node) {
 function vRemoveImg(node) {
     const entry = vstreams.get(node);
     if (entry) {
-        if (entry.img.src) URL.revokeObjectURL(entry.img.src);
         entry.wrap.remove();
         vstreams.delete(node);
     }
@@ -406,12 +414,41 @@ function vReconcile(streams) {
     for (const [node, entry] of vstreams.entries()) {
         if (!ids.has(node)) vRemoveImg(node);
     }
-    streams.forEach((s) => {
-        const entry = vEnsureImg(s.id);
-        if (entry.img.dataset.st) {
-            // placeholder until first frame
+    streams.forEach((s) => vEnsureImg(s.id, s.w, s.h));
+}
+
+// «только последний кадр»: декодим не более одного JPEG за раз на окно,
+// чтобы очередь декодирования не отставала (иначе задержка секундами).
+function vFeedFrame(entry, jpeg) {
+    if (entry.rendering) {
+        entry.pending = jpeg;
+        return;
+    }
+    entry.rendering = true;
+    const img = new Image();
+    const url = URL.createObjectURL(new Blob([jpeg], { type: 'image/jpeg' }));
+    img.onload = () => {
+        try {
+            entry.canvas.getContext('2d').drawImage(img, 0, 0, entry.canvas.width, entry.canvas.height);
+        } catch (_) {}
+        URL.revokeObjectURL(url);
+        entry.rendering = false;
+        if (entry.pending) {
+            const p = entry.pending;
+            entry.pending = null;
+            vFeedFrame(entry, p);
         }
-    });
+    };
+    img.onerror = () => {
+        URL.revokeObjectURL(url);
+        entry.rendering = false;
+        if (entry.pending) {
+            const p = entry.pending;
+            entry.pending = null;
+            vFeedFrame(entry, p);
+        }
+    };
+    img.src = url;
 }
 
 function vHandleBinary(buf) {
@@ -421,34 +458,10 @@ function vHandleBinary(buf) {
     const jpeg = buf.slice(4);
     const entry = vEnsureImg(node);
     vFrames++;
-    if (vFrames % 5 === 0) {
+    if (vFrames % 30 === 0) {
         vSetStatus(`получено кадров: ${vFrames}`);
     }
-    const url = URL.createObjectURL(new Blob([jpeg], { type: 'image/jpeg' }));
-    if (entry.img.src) {
-        URL.revokeObjectURL(entry.img.src);
-    }
-    if (entry.usingData) {
-        URL.revokeObjectURL(url);
-        return;
-    }
-    const img = entry.img;
-    img.onerror = () => {
-        if (img.src && img.src.startsWith('blob:')) URL.revokeObjectURL(img.src);
-        const b64 = arrayToBase64(jpeg);
-        img.src = 'data:image/jpeg;base64,' + b64;
-        entry.usingData = true;
-    };
-    img.src = url;
-}
-
-function arrayToBase64(u8) {
-    let s = '';
-    const CH = 0x8000;
-    for (let i = 0; i < u8.length; i += CH) {
-        s += String.fromCharCode.apply(null, u8.subarray(i, i + CH));
-    }
-    return btoa(s);
+    vFeedFrame(entry, jpeg);
 }
 
 function vHandleBytes(buf) {

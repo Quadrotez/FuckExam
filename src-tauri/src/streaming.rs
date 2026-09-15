@@ -174,6 +174,38 @@ pub fn encode_jpeg(bgra: &[u8], w: usize, h: usize, stride: usize) -> Option<Vec
     Some(out)
 }
 
+/// Кадр для стрима: при большом размере уменьшает до max_dim по большей стороне
+/// (WebKit быстрее декодирует маленькие JPEG, а зрители смотрят в окне ~500px).
+/// Возвращает (w, h, jpeg) реальных размеров JPEG.
+pub fn encode_stream_frame(bgra: &[u8], w: usize, h: usize, stride: usize) -> Option<(u32, u32, Vec<u8>)> {
+    let max_dim = std::env::var("FEX_STREAM_MAX_W")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(1280);
+    if w <= max_dim || h == 0 {
+        let jpeg = encode_jpeg(bgra, w, h, stride)?;
+        return Some((w as u32, h as u32, jpeg));
+    }
+    let scale = (max_dim as f64) / (w.max(h) as f64);
+    let w2 = ((w as f64) * scale).round().clamp(1.0, u32::MAX as f64) as usize;
+    let h2 = ((h as f64) * scale).round().clamp(1.0, u32::MAX as f64) as usize;
+    let stride2 = w2 * 4;
+    let mut scaled = vec![0u8; stride2 * h2];
+    for y2 in 0..h2 {
+        let sy = (((y2 as f64 + 0.5) / h2 as f64) * h as f64) as usize;
+        let sy = sy.min(h - 1);
+        for x2 in 0..w2 {
+            let sx = (((x2 as f64 + 0.5) / w2 as f64) * w as f64) as usize;
+            let sx = sx.min(w - 1);
+            let si = sy * stride + sx * 4;
+            let oi = y2 * stride2 + x2 * 4;
+            scaled[oi..oi + 4].copy_from_slice(&bgra[si..si + 4]);
+        }
+    }
+    let jpeg = encode_jpeg(&scaled, w2, h2, stride2)?;
+    Some((w2 as u32, h2 as u32, jpeg))
+}
+
 pub fn local_addresses() -> Result<Vec<String>, String> {
     let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
     if unsafe { libc::getifaddrs(&mut list) } != 0 {
@@ -635,6 +667,27 @@ mod tests {
                 assert!(!ip.starts_with("1.0.0."), "байты перевёрнуты? {ip}");
             }
         }
+    }
+
+    #[test]
+    fn stream_frame_scales_down() {
+        let (w, h) = (1920usize, 1080usize);
+        let stride = w * 4;
+        let mut buf = vec![128u8; stride * h];
+        let r = encode_stream_frame(&buf, w, h, stride).expect("scaled jpeg");
+        assert_eq!(r.0 as usize, 1280, "должно ужаться до 1280 по большей стороне");
+        assert!(r.1 > 0 && r.2.len() > 100);
+        std::fs::write("/tmp/fex_scaled.jpg", &r.2).ok();
+    }
+
+    #[test]
+    fn stream_frame_no_scale_small() {
+        let (w, h) = (640usize, 360usize);
+        let stride = w * 4;
+        let mut buf = vec![64u8; stride * h];
+        let r = encode_stream_frame(&buf, w, h, stride).expect("jpeg");
+        assert_eq!(r.0 as usize, 640);
+        assert_eq!(r.1 as usize, 360);
     }
 
     #[tokio::test]

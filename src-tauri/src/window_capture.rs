@@ -223,6 +223,7 @@ fn writer_loop(
     let mut child: Option<Child> = None;
     let mut next = Instant::now();
     let mut next_push = Instant::now();
+    let mut last_push: Option<(u32, u32, Vec<u8>)> = None;
 
     while !stop.load(Ordering::Relaxed) {
         let now = Instant::now();
@@ -269,14 +270,24 @@ fn writer_loop(
         if let Some(hub) = &stream {
             if now2 >= next_push && stride != 0 && data.len() >= stride * h as usize {
                 next_push = now2 + Duration::from_millis(100);
-                if let Some(jpeg) = streaming::encode_jpeg(&data, w as usize, h as usize, stride) {
-                    if std::env::var_os("FEX_DEBUG").is_some() {
-                        eprintln!(
-                            "[fuckexam] window {node_id}: push jpeg {w}x{h} ({} bytes)",
-                            jpeg.len()
-                        );
+                if let Some((pw, ph, jpeg)) =
+                    streaming::encode_stream_frame(&data, w as usize, h as usize, stride)
+                {
+                    // пропускаем побитово одинаковые кадры (статичные окна не спамят стрим)
+                    let same = last_push
+                        .as_ref()
+                        .map(|(_, _, j)| j == &jpeg)
+                        .unwrap_or(false);
+                    last_push = Some((pw, ph, jpeg.clone()));
+                    if !same {
+                        if std::env::var_os("FEX_DEBUG").is_some() {
+                            eprintln!(
+                                "[fuckexam] window {node_id}: push jpeg {pw}x{ph} ({} bytes)",
+                                jpeg.len()
+                            );
+                        }
+                        hub.push_video(node_id, pw, ph, jpeg);
                     }
-                    hub.push_video(node_id, w, h, jpeg);
                 }
             }
         }
