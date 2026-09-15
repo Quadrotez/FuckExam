@@ -185,9 +185,10 @@ pub fn local_addresses() -> Result<Vec<String>, String> {
             if family == libc::AF_INET {
                 let sin = ifa.ifa_addr as *const libc::sockaddr_in;
                 let addr = unsafe { &*sin }.sin_addr;
-                if addr.s_addr != 0 {
-                    let b = addr.s_addr.to_be_bytes();
-                    let ip = format!("{}.{}.{}.{}", b[0], b[1], b[2], b[3]);
+if addr.s_addr != 0 {
+                // s_addr уже в сетевом порядке; порядок байтов в памяти = октеты IP
+                let b = addr.s_addr.to_ne_bytes();
+                let ip = format!("{}.{}.{}.{}", b[0], b[1], b[2], b[3]);
                     if !ip.starts_with("127.")
                         && !ip.starts_with("0.")
                         && !ip.starts_with("169.254.")
@@ -581,6 +582,22 @@ mod tests {
                 assert_eq!(&b[4..], &[0xAA, 0xBB]);
             }
             _ => panic!("expected binary"),
+        }
+    }
+
+    #[test]
+    fn local_addresses_octet_order() {
+        // эндпоинты, которые реально попадают в локальную сеть
+        if let Ok(list) = local_addresses() {
+            for ip in list {
+                let octets = ip.split('.').collect::<Vec<_>>();
+                assert!(
+                    ip.parse::<std::net::Ipv4Addr>().is_ok(),
+                    "неправильный IP: {ip}"
+                );
+                assert_eq!(octets.len(), 4);
+                assert!(!ip.starts_with("1.0.0."), "байты перевёрнуты? {ip}");
+            }
         }
     }
 
