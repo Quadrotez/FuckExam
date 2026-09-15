@@ -11,9 +11,9 @@
     "windows": [
       {
         "title": "FuckExam",
-        "width": 520,
-        "height": 720,
-        "minWidth": 420,
+        "width": 880,
+        "height": 740,
+        "minWidth": 760,
         "minHeight": 560,
         "resizable": true,
         "center": true

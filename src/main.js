@@ -399,7 +399,7 @@ function vEnsureImg(node, w, h) {
         vstreams.set(node, entry);
     }
     if (w && h) {
-        const cw = Math.min(w, 960);
+        const cw = Math.min(w, 1920);
         const ch = Math.max(1, Math.round((h / w) * cw));
         if (entry.canvas.width !== cw || entry.canvas.height !== ch) {
             entry.canvas.width = cw;

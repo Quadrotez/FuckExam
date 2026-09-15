@@ -166,7 +166,7 @@ pub fn encode_jpeg(bgra: &[u8], w: usize, h: usize, stride: usize) -> Option<Vec
     let quality = std::env::var("FEX_JPEG_QUALITY")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(85);
+        .unwrap_or(90);
     let mut out = Vec::new();
     let enc = jpeg_encoder::Encoder::new(&mut out, quality);
     enc.encode(&rgb, w as u16, h as u16, jpeg_encoder::ColorType::Rgb)
@@ -181,7 +181,7 @@ pub fn encode_stream_frame(bgra: &[u8], w: usize, h: usize, stride: usize) -> Op
     let max_dim = std::env::var("FEX_STREAM_MAX_W")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(1280);
+        .unwrap_or(1920);
     if w <= max_dim || h == 0 {
         let jpeg = encode_jpeg(bgra, w, h, stride)?;
         return Some((w as u32, h as u32, jpeg));
@@ -671,6 +671,7 @@ mod tests {
 
     #[test]
     fn stream_frame_scales_down() {
+        std::env::set_var("FEX_STREAM_MAX_W", "1280");
         let (w, h) = (1920usize, 1080usize);
         let stride = w * 4;
         let mut buf = vec![128u8; stride * h];
@@ -678,6 +679,7 @@ mod tests {
         assert_eq!(r.0 as usize, 1280, "должно ужаться до 1280 по большей стороне");
         assert!(r.1 > 0 && r.2.len() > 100);
         std::fs::write("/tmp/fex_scaled.jpg", &r.2).ok();
+        std::env::remove_var("FEX_STREAM_MAX_W");
     }
 
     #[test]
