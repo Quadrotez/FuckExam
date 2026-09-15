@@ -1,0 +1,260 @@
+:root {
+    --bg: #0a0000;
+    --surface: #120000;
+    --surface2: #1a0505;
+    --accent: #ff1a1a;
+    --accent-dim: #660a0a;
+    --accent-glow: rgba(255, 30, 30, 0.25);
+    --text: #eee;
+    --text-dim: #886666;
+    --radius: 16px;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+    height: 100%;
+    width: 100%;
+    font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: radial-gradient(ellipse at 30% 10%, #180000 0%, var(--bg) 70%);
+    color: var(--text);
+    overflow: hidden;
+    user-select: none;
+}
+
+.scanlines {
+    position: fixed; inset: 0; z-index: 10; pointer-events: none;
+    background: repeating-linear-gradient(
+        0deg,
+        transparent 0px,
+        rgba(255,0,0,0.015) 1px,
+        transparent 2px,
+        transparent 4px
+    );
+    animation: scanMove 8s linear infinite;
+}
+
+@keyframes scanMove {
+    from { transform: translateY(0); }
+    to   { transform: translateY(4px); }
+}
+
+.vignette {
+    position: fixed; inset: 0; z-index: 10; pointer-events: none;
+    background: radial-gradient(ellipse at center, transparent 50%, rgba(0,0,0,0.7));
+}
+
+.container {
+    position: relative; z-index: 1;
+    height: 100%; width: 100%;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 24px;
+    padding: 40px 32px;
+}
+
+header { text-align: center; }
+
+.logo {
+    display: flex; align-items: center; gap: 14px;
+    justify-content: center;
+    margin-bottom: 6px;
+}
+
+.logo-icon {
+    font-size: 32px; color: var(--accent);
+    animation: iconPulse 3s ease-in-out infinite;
+    text-shadow: 0 0 18px var(--accent), 0 0 50px var(--accent-dim);
+}
+
+@keyframes iconPulse {
+    0%,100% { opacity: 0.7; transform: scale(1); }
+    50%     { opacity: 1;   transform: scale(1.08); }
+}
+
+h1 {
+    font-size: 42px; font-weight: 800; letter-spacing: -1px;
+    text-shadow: 0 0 30px rgba(255,30,30,0.4), 0 2px 12px rgba(0,0,0,0.8);
+}
+
+h1 .accent { color: var(--accent); }
+
+.subtitle {
+    color: var(--text-dim); font-size: 13px; font-weight: 500;
+    letter-spacing: 2px; text-transform: uppercase;
+}
+
+.status-bar {
+    display: flex; align-items: center; gap: 10px;
+    max-width: 100%;
+    padding: 10px 22px;
+    background: rgba(0,0,0,0.55);
+    border: 1px solid rgba(255,60,60,0.12);
+    border-radius: 40px;
+    font-size: 13px; color: var(--text-dim);
+    backdrop-filter: blur(8px);
+}
+
+.status-bar #status-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
+.status-bar .dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--text-dim);
+    transition: background 0.3s;
+}
+
+.status-bar .timer {
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    color: var(--text);
+    letter-spacing: 1px;
+}
+
+.status-bar .timer.hidden {
+    display: none;
+}
+
+.status-bar.recording .timer {
+    color: var(--accent);
+    text-shadow: 0 0 10px rgba(255,30,30,0.5);
+}
+
+.status-bar.recording .dot {
+    background: var(--accent);
+    animation: recBlink 1s ease-in-out infinite;
+    box-shadow: 0 0 8px var(--accent);
+}
+
+@keyframes recBlink {
+    0%,100% { opacity: 1; }
+    50%     { opacity: 0.25; }
+}
+
+.btn-rec {
+    position: relative; cursor: pointer;
+    border: none; outline: none; border-radius: 60px;
+    padding: 22px 60px;
+    font-size: 16px; font-weight: 700;
+    letter-spacing: 1px; text-transform: uppercase;
+    color: #fff; background: var(--accent);
+    box-shadow:
+        0 0 24px rgba(255,30,30,0.45),
+        inset 0 -3px 8px rgba(0,0,0,0.4),
+        inset 0 1px 0 rgba(255,255,255,0.12);
+    transition: transform 0.15s, box-shadow 0.25s, background 0.3s;
+    overflow: hidden;
+}
+
+.btn-rec:hover:not(:disabled) {
+    transform: translateY(-1px) scale(1.03);
+    box-shadow:
+        0 0 42px rgba(255,30,30,0.7),
+        inset 0 -3px 8px rgba(0,0,0,0.4);
+}
+
+.btn-rec:active:not(:disabled) {
+    transform: scale(0.97);
+    box-shadow:
+        0 0 12px rgba(255,30,30,0.5),
+        inset 0 3px 6px rgba(0,0,0,0.5);
+}
+
+.btn-rec:disabled {
+    cursor: default; opacity: 0.55;
+}
+
+.btn-rec .btn-pulse {
+    position: absolute; inset: 0; border-radius: 60px;
+    pointer-events: none; opacity: 0;
+}
+
+.btn-rec.recording {
+    background: linear-gradient(135deg, #aa0000, #600000);
+    animation: recGlow 2s ease-in-out infinite;
+}
+
+.btn-rec.recording .btn-pulse {
+    opacity: 1;
+    border: 2px solid var(--accent);
+    animation: btnPulse 1.5s ease-out infinite;
+}
+
+@keyframes recGlow {
+    0%,100% { box-shadow: 0 0 18px rgba(255,30,30,0.4), inset 0 0 32px rgba(255,0,0,0.08); }
+    50%     { box-shadow: 0 0 36px rgba(255,30,30,0.8), inset 0 0 32px rgba(255,0,0,0.18); }
+}
+
+@keyframes btnPulse {
+    0%   { transform: scale(1);   opacity: 0.7; }
+    100% { transform: scale(1.35); opacity: 0; }
+}
+
+.windows {
+    width: 100%; max-width: 400px;
+    display: flex; flex-direction: column; gap: 8px;
+    margin-top: 8px;
+}
+
+.win-item {
+    padding: 12px 18px;
+    background: var(--surface);
+    border: 1px solid rgba(255,40,40,0.1);
+    border-radius: var(--radius);
+    font-size: 13px;
+    transition: background 0.2s, border-color 0.2s;
+    animation: slideIn 0.35s ease-out;
+}
+
+@keyframes slideIn {
+    from { transform: translateY(8px); opacity: 0; }
+    to   { transform: translateY(0);   opacity: 1; }
+}
+
+.win-item .node {
+    font-weight: 700; color: var(--accent); margin-right: 10px;
+}
+
+.win-item .res {
+    font-weight: 600; color: var(--text);
+    font-variant-numeric: tabular-nums;
+    padding: 2px 8px;
+    background: rgba(255,30,30,0.08);
+    border: 1px solid rgba(255,40,40,0.15);
+    border-radius: 8px;
+    font-size: 11px;
+}
+
+.win-item .path {
+    color: var(--text-dim); font-size: 11px; word-break: break-all; margin-top: 4px;
+}
+
+.footer { text-align: center; }
+
+.path-hint {
+    font-size: 11px; color: var(--text-dim);
+    word-break: break-all;
+    margin-bottom: 8px;
+}
+
+.hint {
+    font-size: 11px; color: var(--text-dim);
+    opacity: 0.6;
+}
+
+.flicker {
+    animation: flicker 0.15s linear 3;
+}
+
+@keyframes flicker {
+    0%   { opacity: 0.95; }
+    25%  { opacity: 0.6; }
+    50%  { opacity: 0.9; }
+    75%  { opacity: 0.7; }
+    100% { opacity: 1; }
+}

@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>FuckExam</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>🎥</text></svg>">
+</head>
+<body>
+    <div class="scanlines"></div>
+    <div class="vignette"></div>
+
+    <div class="container">
+        <header>
+            <div class="logo">
+                <span class="logo-icon">◈</span>
+                <h1>F<span class="accent">u</span>ckExam</h1>
+            </div>
+            <p class="subtitle">Запись окон · Wayland · PipeWire</p>
+        </header>
+
+        <div class="status-bar">
+            <span class="dot"></span>
+            <span id="status-text">готово</span>
+            <span id="timer" class="timer hidden"></span>
+        </div>
+
+        <button id="btn" class="btn-rec">
+            <span class="btn-label">Начать запись</span>
+            <span class="btn-pulse"></span>
+        </button>
+
+        <div id="windows" class="windows"></div>
+
+        <div class="footer">
+            <p class="path-hint" id="path-hint"></p>
+            <p class="hint">Выделите нужные окна в появившемся диалоге и подтвердите</p>
+        </div>
+    </div>
+
+    <script src="main.js"></script>
+</body>
+</html>
