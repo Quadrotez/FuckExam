@@ -48,54 +48,60 @@
                 <button class="link-btn" data-back="landing">← смена роли</button>
             </header>
 
-            <div class="status-bar">
-                <span class="dot"></span>
-                <span id="status-text">готово</span>
-                <span id="timer" class="timer hidden"></span>
-            </div>
-
-            <button id="btn" class="btn-rec">
-                <span class="btn-label">Начать запись</span>
-                <span class="btn-pulse"></span>
-            </button>
-
-            <div id="windows" class="windows"></div>
-
-            <section class="panel">
-                <h2>Трансляция</h2>
-                <div class="seg" id="seg-mode">
-                    <button class="seg-btn active" data-mode="local">Локально</button>
-                    <button class="seg-btn" data-mode="relay">Через relay</button>
-                </div>
-                <div class="s-form">
-                    <div class="s-field" data-field="port">
-                        <label for="s-port">Порт</label>
-                        <input id="s-port" value="7335">
+            <div class="rec-layout">
+                <div class="rec-main">
+                    <div class="status-bar">
+                        <span class="dot"></span>
+                        <span id="status-text">готово</span>
+                        <span id="timer" class="timer hidden"></span>
                     </div>
-                    <div class="s-field" data-field="url" style="display:none">
-                        <label for="s-relay-url">Relay WS</label>
-                        <input id="s-relay-url" placeholder="ws://host:7444">
-                    </div>
-                    <div class="s-field" data-field="room" style="display:none">
-                        <label for="s-room">Комната</label>
-                        <input id="s-room" placeholder="случайная, если пусто">
+
+                    <button id="btn" class="btn-rec">
+                        <span class="btn-label">Начать запись</span>
+                        <span class="btn-pulse"></span>
+                    </button>
+
+                    <div id="windows" class="windows"></div>
+
+                    <section class="panel">
+                        <h2>Трансляция</h2>
+                        <div class="seg" id="seg-mode">
+                            <button class="seg-btn active" data-mode="local">Локально</button>
+                            <button class="seg-btn" data-mode="relay">Через relay</button>
+                        </div>
+                        <div class="s-form">
+                            <div class="s-field" data-field="port">
+                                <label for="s-port">Порт</label>
+                                <input id="s-port" value="7335">
+                            </div>
+                            <div class="s-field" data-field="url" style="display:none">
+                                <label for="s-relay-url">Relay WS</label>
+                                <input id="s-relay-url" placeholder="ws://host:7444">
+                            </div>
+                            <div class="s-field" data-field="room" style="display:none">
+                                <label for="s-room">Комната</label>
+                                <input id="s-room" placeholder="случайная, если пусто">
+                            </div>
+                        </div>
+                        <div class="s-actions">
+                            <button id="s-start" class="btn-sec">Запустить</button>
+                            <button id="s-stop" class="btn-sec" disabled>Остановить</button>
+                        </div>
+                        <div id="s-status" class="s-status hidden"></div>
+                    </section>
+
+                    <div class="footer">
+                        <p class="path-hint" id="path-hint"></p>
+                        <p class="hint">Выделите нужные окна в появившемся диалоге и подтвердите</p>
                     </div>
                 </div>
-                <div class="s-actions">
-                    <button id="s-start" class="btn-sec">Запустить</button>
-                    <button id="s-stop" class="btn-sec" disabled>Остановить</button>
-                </div>
-                <div id="s-status" class="s-status hidden"></div>
-            </section>
 
-            <section class="panel chat-ro">
-                <h3>Чат зрителей <span class="dim">(только чтение)</span></h3>
-                <div id="chat-log" class="chat-log"></div>
-            </section>
-
-            <div class="footer">
-                <p class="path-hint" id="path-hint"></p>
-                <p class="hint">Выделите нужные окна в появившемся диалоге и подтвердите</p>
+                <aside class="rec-chat">
+                    <section class="panel chat-ro">
+                        <h3>Чат зрителей <span class="dim">(только чтение)</span></h3>
+                        <div id="chat-log" class="chat-log"></div>
+                    </section>
+                </aside>
             </div>
         </div>
     </div>
@@ -124,6 +130,7 @@
             </div>
 
             <div id="v-grid" class="v-grid"></div>
+            <p class="hint">клик по превью — на весь экран, Esc — выход</p>
 
             <section class="panel chat-rw">
                 <h3>Чат</h3>

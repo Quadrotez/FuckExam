@@ -382,6 +382,14 @@ function vEnsureImg(node, w, h) {
         const wrap = document.createElement('div');
         wrap.className = 'v-cell';
         wrap.innerHTML = `<span class="v-node">node ${node}</span>`;
+        wrap.title = 'клик — полный экран';
+        wrap.addEventListener('click', () => {
+            if (document.fullscreenElement === wrap) {
+                document.exitFullscreen().catch(() => {});
+            } else {
+                wrap.requestFullscreen().catch(() => {});
+            }
+        });
         const canvas = document.createElement('canvas');
         canvas.width = 640;
         canvas.height = 360;
@@ -397,6 +405,7 @@ function vEnsureImg(node, w, h) {
             entry.canvas.width = cw;
             entry.canvas.height = ch;
         }
+        entry.wrap.style.aspectRatio = `${w} / ${h}`;
     }
     return entry;
 }
