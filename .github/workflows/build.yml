@@ -71,7 +71,9 @@ jobs:
 
       - name: Install tauri-cli
         # Build the CLI on Jammy instead of downloading a newer GLIBC-linked binary.
-        run: cargo install tauri-cli --locked
+        run: |
+          rm -f "$HOME/.cargo/bin/cargo-tauri"
+          cargo install tauri-cli --locked --force
 
       - name: Build bundles (deb + AppImage)
         env:
