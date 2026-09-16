@@ -75,12 +75,15 @@ jobs:
           rm -f "$HOME/.cargo/bin/cargo-tauri"
           cargo install tauri-cli --locked --force
 
-      - name: Build bundles (deb + AppImage)
+      - name: Compile Linux client
+        run: cargo build --release --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: Bundle Linux client (deb + AppImage)
         env:
           # linuxdeploy тянет устаревший strip, который падает на .relr.dyn (новые дистры)
           NO_STRIP: "1"
         run: |
-          (cd src-tauri && cargo tauri build --bundles deb,appimage)
+          (cd src-tauri && cargo tauri bundle --bundles deb,appimage --ci)
 
       - name: Stage artifacts
         id: ver
