@@ -23,7 +23,8 @@ env:
 jobs:
   # Linux: .deb + .AppImage + бинарник записывающего
   build-linux:
-    runs-on: ubuntu-24.04
+    # Build on an older glibc baseline so AppImage also works on older distros.
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
@@ -31,7 +32,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
+            libwebkit2gtk-4.0-dev \
             build-essential \
             curl wget file \
             libxdo-dev \
@@ -44,6 +45,13 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Check target architecture and libc baseline
+        run: |
+          uname -m
+          dpkg --print-architecture
+          ldd --version | head -1
+          rustc -vV | grep '^host:'
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -70,7 +78,7 @@ jobs:
           mkdir -p release-artifacts
           cp src-tauri/target/release/bundle/deb/*.deb release-artifacts/
           cp src-tauri/target/release/bundle/appimage/*.AppImage release-artifacts/
-          cp src-tauri/target/release/fuck-exam "release-artifacts/fuck-exam-linux-x86_64-${VERSION}"
+          cp src-tauri/target/release/fuck-exam "release-artifacts/fuck-exam-linux-x86_64-glibc-2.35-${VERSION}"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
