@@ -60,7 +60,8 @@ jobs:
           workspaces: "./src-tauri -> target"
 
       - name: Install tauri-cli
-        run: cargo install tauri-cli --version "^2.0.0" --locked
+        # Latest CLI binaries may require GLIBC_2.39; 2.0.0 builds on Jammy.
+        run: cargo install tauri-cli --version "=2.0.0" --locked
 
       - name: Build bundles (deb + AppImage)
         env:
