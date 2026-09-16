@@ -54,14 +54,24 @@ jobs:
           ldd --version | head -1
           rustc -vV | grep '^host:'
 
+      - name: Validate release version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          APP_VERSION=$(sed -n 's/^version = "\([^\"]*\)"/\1/p' src-tauri/Cargo.toml | head -1)
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          test "$APP_VERSION" = "$TAG_VERSION" || {
+            echo "Version mismatch: Cargo.toml=$APP_VERSION, tag=$TAG_VERSION"
+            exit 1
+          }
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: "./src-tauri -> target"
 
       - name: Install tauri-cli
-        # Latest CLI binaries may require GLIBC_2.39; 2.0.0 builds on Jammy.
-        run: cargo install tauri-cli --version "=2.0.0" --locked
+        # Build the CLI on Jammy instead of downloading a newer GLIBC-linked binary.
+        run: cargo install tauri-cli --locked
 
       - name: Build bundles (deb + AppImage)
         env:
@@ -88,14 +98,6 @@ jobs:
           name: fuck-exam-linux
           path: release-artifacts/
 
-      - name: Attach to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          draft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          generate_release_notes: true
-          files: release-artifacts/*
 
   # Relay-сервер: бинарник + тесты
   build-relay:
@@ -133,13 +135,6 @@ jobs:
           name: fuck-exam-relay-linux
           path: release-artifacts/
 
-      - name: Attach to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          draft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          files: release-artifacts/*
 
   # relay-контейнер в GHCR для сервера (docker compose pull)
   docker-image:
@@ -219,8 +214,24 @@ jobs:
         with:
           name: fuck-exam-windows
           path: release-artifacts/
-      - name: Attach Windows artifacts to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+
+  # Release is created only after every platform build and relay image succeeds.
+  publish-release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [build-linux, build-relay, build-windows, docker-image]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
         with:
-          files: release-artifacts/*
+          pattern: fuck-exam-*
+          path: release-artifacts
+          merge-multiple: true
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" release-artifacts/* \
+            --repo "${{ github.repository }}" \
+            --title "FuckExam ${{ github.ref_name }}" \
+            --generate-notes

@@ -1,6 +1,6 @@
 [package]
 name = "fuck-exam"
-version = "0.2.0"
+version = "0.2.1"
 description = "FuckExam — запись выбранных окон в видео"
 edition = "2021"
 default-run = "fuck-exam"
