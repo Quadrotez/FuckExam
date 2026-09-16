@@ -37,6 +37,7 @@ jobs:
             curl wget file \
             libxdo-dev \
             libssl-dev \
+            libunwind-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf \
