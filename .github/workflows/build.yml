@@ -75,6 +75,9 @@ jobs:
           rm -f "$HOME/.cargo/bin/cargo-tauri"
           cargo install tauri-cli --locked --force
 
+      - name: Clean cached application target
+        run: rm -rf src-tauri/target
+
       - name: Compile Linux client
         run: cargo build --release --locked --manifest-path src-tauri/Cargo.toml
 
