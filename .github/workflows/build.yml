@@ -24,7 +24,7 @@ jobs:
   # Linux: .deb + .AppImage + бинарник записывающего
   build-linux:
     # Build on an older glibc baseline so AppImage also works on older distros.
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -32,7 +32,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libwebkit2gtk-4.0-dev \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
             build-essential \
             curl wget file \
             libxdo-dev \
