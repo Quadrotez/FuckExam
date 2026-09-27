@@ -878,7 +878,7 @@ vChatImageRemove.addEventListener('click', () => {
     setChatFeedback('Фото удалено.');
 });
 vChatInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+    if (e.key === 'Enter' && !e.ctrlKey && !e.shiftKey && !e.metaKey && !e.isComposing) {
         e.preventDefault();
         vChatForm.requestSubmit();
     }
