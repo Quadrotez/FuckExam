@@ -436,15 +436,73 @@ setSeg('local');
 
 const recChatLog = $('chat-log');
 
-function recChatAppend(msg) {
+const MAX_CHAT_TEXT_LENGTH = 4000;
+const MAX_CHAT_IMAGE_BYTES = 512 * 1024;
+const MAX_CHAT_IMAGE_BASE64_LENGTH = 4 * Math.ceil(MAX_CHAT_IMAGE_BYTES / 3);
+
+function isValidChatImage(image) {
+    if (!image || typeof image.data !== 'string' || typeof image.name !== 'string') return false;
+    if (!image.data.length || image.data.length > MAX_CHAT_IMAGE_BASE64_LENGTH || image.data.length % 4 !== 0) return false;
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(image.data)) return false;
+    try {
+        const bytes = atob(image.data);
+        return bytes.length <= MAX_CHAT_IMAGE_BYTES && bytes.length >= 4 &&
+            bytes.charCodeAt(0) === 0xff && bytes.charCodeAt(1) === 0xd8 &&
+            bytes.charCodeAt(bytes.length - 2) === 0xff && bytes.charCodeAt(bytes.length - 1) === 0xd9;
+    } catch (_) {
+        return false;
+    }
+}
+
+function appendChatMessage(log, msg) {
+    const text = typeof msg.text === 'string' ? msg.text : '';
+    const hasImage = isValidChatImage(msg.image);
+    if (!text && !hasImage) return;
+
     const div = document.createElement('div');
     div.className = 'msg';
-    div.innerHTML = `<span class="from">${escapeHtml(msg.from)}</span><span class="text">${escapeHtml(msg.text)}</span>`;
-    recChatLog.appendChild(div);
-    recChatLog.scrollTop = recChatLog.scrollHeight;
-    while (recChatLog.children.length > 100) {
-        recChatLog.removeChild(recChatLog.firstChild);
+
+    const from = document.createElement('span');
+    from.className = 'from';
+    from.textContent = String(msg.from || 'зритель');
+    div.appendChild(from);
+
+    if (text) {
+        const body = document.createElement('span');
+        body.className = 'text';
+        if (msg.markdown === true && window.marked && window.DOMPurify) {
+            try {
+                const html = window.marked.parse(text, { gfm: true, breaks: true });
+                body.classList.add('markdown');
+                body.innerHTML = window.DOMPurify.sanitize(html, {
+                    ALLOWED_TAGS: ['p', 'br', 'strong', 'em', 'del', 'blockquote', 'ul', 'ol', 'li', 'code', 'pre', 'a', 'h1', 'h2', 'h3', 'h4', 'hr', 'table', 'thead', 'tbody', 'tr', 'th', 'td'],
+                    ALLOWED_ATTR: ['href', 'title'],
+                });
+                body.querySelectorAll('a[href]').forEach((link) => {
+                    link.target = '_blank';
+                    link.rel = 'noopener noreferrer';
+                });
+            } catch (_) {
+                body.textContent = text;
+            }
+        } else {
+            body.textContent = text;
+        }
+        div.appendChild(body);
     }
+
+    if (hasImage) {
+        const image = document.createElement('img');
+        image.className = 'chat-image';
+        image.loading = 'lazy';
+        image.alt = msg.image.name.slice(0, 120);
+        image.src = `data:image/jpeg;base64,${msg.image.data}`;
+        div.appendChild(image);
+    }
+
+    log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
+    while (log.children.length > 100) log.removeChild(log.firstChild);
 }
 
 function escapeHtml(s) {
@@ -457,12 +515,13 @@ listen('stream-chat', (evt) => {
     const m = evt.payload;
     if (typeof m === 'string') {
         try {
-            recChatAppend(JSON.parse(m).from ? JSON.parse(m) : { from: '?', text: m });
+            const parsed = JSON.parse(m);
+            appendChatMessage(recChatLog, parsed.from ? parsed : { from: '?', text: m });
         } catch (_) {
-            recChatAppend({ from: '?', text: m });
+            appendChatMessage(recChatLog, { from: '?', text: m });
         }
     } else if (m && m.from) {
-        recChatAppend(m);
+        appendChatMessage(recChatLog, m);
     }
 });
 
@@ -478,24 +537,80 @@ const vGrid = $('v-grid');
 const vChatLog = $('v-chat-log');
 const vChatForm = $('v-chat-form');
 const vChatInput = $('v-chat-input');
+const vChatMarkdown = $('v-chat-markdown');
+const vChatImageInput = $('v-chat-image-input');
+const vChatAttach = $('v-chat-attach');
+const vChatImagePreview = $('v-chat-image-preview');
+const vChatImagePreviewImg = $('v-chat-image-preview-img');
+const vChatImagePreviewName = $('v-chat-image-preview-name');
+const vChatImageRemove = $('v-chat-image-remove');
+const vChatFeedback = $('v-chat-feedback');
 
 let vsock = null;
 let vFrames = 0;
 let vConnAborted = false;
+let pendingChatImage = null;
 const vstreams = new Map(); // node -> { img, stale }
 
 function vSetStatus(text) {
     vStatusText.textContent = text;
 }
 
-function vChatAppend(html) {
-    const div = document.createElement('div');
-    div.className = 'msg';
-    div.innerHTML = html;
-    vChatLog.appendChild(div);
-    vChatLog.scrollTop = vChatLog.scrollHeight;
-    while (vChatLog.children.length > 100) {
-        vChatLog.removeChild(vChatLog.firstChild);
+function setChatFeedback(text, kind = '') {
+    vChatFeedback.textContent = text;
+    vChatFeedback.classList.toggle('error', kind === 'error');
+    vChatFeedback.classList.toggle('success', kind === 'success');
+}
+
+function clearPendingChatImage() {
+    pendingChatImage = null;
+    vChatImagePreviewImg.removeAttribute('src');
+    vChatImagePreviewName.textContent = '';
+    vChatImagePreview.classList.add('hidden');
+}
+
+function imageBlobToDataUrl(blob) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('не удалось прочитать фото'));
+        reader.onerror = () => reject(new Error('не удалось прочитать фото'));
+        reader.readAsDataURL(blob);
+    });
+}
+
+async function prepareChatImage(file) {
+    const supportedTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/bmp', 'image/avif'];
+    if (!supportedTypes.includes(String(file.type).toLowerCase())) {
+        throw new Error('Выберите JPEG, PNG, WebP, GIF, BMP или AVIF-фото.');
+    }
+    if (file.size > 15 * 1024 * 1024) throw new Error('Исходный файл больше 15 МБ.');
+
+    const bitmap = await createImageBitmap(file);
+    try {
+        if (bitmap.width * bitmap.height > 30_000_000) {
+            throw new Error('Размер фото превышает 30 мегапикселей.');
+        }
+        const scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+        canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+        canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+
+        let blob = null;
+        for (const quality of [0.82, 0.72, 0.62, 0.52, 0.42]) {
+            blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', quality));
+            if (!blob) throw new Error('Не удалось обработать фото в этом браузере.');
+            if (blob.size <= MAX_CHAT_IMAGE_BYTES) break;
+        }
+        if (!blob || blob.size > MAX_CHAT_IMAGE_BYTES) {
+            throw new Error('Не удалось сжать фото до 512 КБ. Выберите изображение поменьше.');
+        }
+
+        const dataUrl = await imageBlobToDataUrl(blob);
+        const baseName = String(file.name || 'photo').replace(/[\\/\0-\x1f\x7f]/g, '_').replace(/\.[^.]*$/, '').slice(0, 90) || 'photo';
+        return { name: `${baseName}.jpg`, data: dataUrl.slice(dataUrl.indexOf(',') + 1) };
+    } finally {
+        bitmap.close?.();
     }
 }
 
@@ -623,11 +738,7 @@ function vHandleMsg(evt) {
                     vSetStatus(`подключено (${msg.streams.length} стримов)`);
                 }
                 if (msg.history) {
-                    msg.history.forEach((m) =>
-                        vChatAppend(
-                            `<span class="from">${escapeHtml(m.from)}</span><span class="text">${escapeHtml(m.text)}</span>`
-                        )
-                    );
+                    msg.history.forEach((m) => appendChatMessage(vChatLog, m));
                 }
                 break;
             case 'streams':
@@ -642,11 +753,7 @@ function vHandleMsg(evt) {
                 vRemoveImg(msg.id);
                 break;
             case 'chat':
-                if (msg.from && msg.text) {
-                    vChatAppend(
-                        `<span class="from">${escapeHtml(msg.from)}</span><span class="text">${escapeHtml(msg.text)}</span>`
-                    );
-                }
+                if (msg.from) appendChatMessage(vChatLog, msg);
                 break;
             case 'error':
                 vSetStatus('ошибка: ' + msg.error);
@@ -746,12 +853,64 @@ function doDisconnect() {
 vConnect.addEventListener('click', doConnect);
 vDisconnect.addEventListener('click', doDisconnect);
 
+vChatAttach.addEventListener('click', () => vChatImageInput.click());
+vChatImageInput.addEventListener('change', async () => {
+    const file = vChatImageInput.files?.[0];
+    vChatImageInput.value = '';
+    if (!file) return;
+    vChatAttach.disabled = true;
+    setChatFeedback('Обработка фото…');
+    try {
+        pendingChatImage = await prepareChatImage(file);
+        vChatImagePreviewImg.src = `data:image/jpeg;base64,${pendingChatImage.data}`;
+        vChatImagePreviewName.textContent = pendingChatImage.name;
+        vChatImagePreview.classList.remove('hidden');
+        setChatFeedback('Фото готово к отправке.');
+    } catch (e) {
+        clearPendingChatImage();
+        setChatFeedback(String(e), 'error');
+    } finally {
+        vChatAttach.disabled = false;
+    }
+});
+vChatImageRemove.addEventListener('click', () => {
+    clearPendingChatImage();
+    setChatFeedback('Фото удалено.');
+});
+vChatInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        vChatForm.requestSubmit();
+    }
+});
+
 vChatForm.addEventListener('submit', (e) => {
     e.preventDefault();
     const text = vChatInput.value.trim();
-    vChatInput.value = '';
-    if (!text || !vsock || vsock.readyState !== WebSocket.OPEN) return;
-    vsock.send(JSON.stringify({ type: 'chat', from: vName.value.trim() || 'зритель', text }));
+    if (!text && !pendingChatImage) return;
+    if (text.length > MAX_CHAT_TEXT_LENGTH) {
+        setChatFeedback(`Сообщение слишком длинное (максимум ${MAX_CHAT_TEXT_LENGTH} символов).`, 'error');
+        return;
+    }
+    if (!vsock || vsock.readyState !== WebSocket.OPEN) {
+        setChatFeedback('Сначала подключитесь к трансляции.', 'error');
+        return;
+    }
+    const message = {
+        type: 'chat',
+        from: vName.value.trim() || 'зритель',
+        text,
+        markdown: vChatMarkdown.checked,
+        image: pendingChatImage,
+    };
+    try {
+        vsock.send(JSON.stringify(message));
+        vChatInput.value = '';
+        clearPendingChatImage();
+        setChatFeedback('Сообщение отправлено.', 'success');
+    } catch (err) {
+        setChatFeedback('Не удалось отправить сообщение: ' + String(err), 'error');
+    }
 });
 
 /* ---------------- boot ---------------- */

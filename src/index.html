@@ -140,13 +140,27 @@
                 <h3>Чат</h3>
                 <div id="v-chat-log" class="chat-log"></div>
                 <form id="v-chat-form" class="chat-form">
-                    <input id="v-chat-input" placeholder="Сообщение…" autocomplete="off">
-                    <button type="submit" class="btn-sec">➤</button>
+                    <textarea id="v-chat-input" rows="2" maxlength="4000" placeholder="Сообщение…" autocomplete="off"></textarea>
+                    <button type="submit" class="btn-sec" id="v-chat-send">➤</button>
                 </form>
+                <div class="chat-tools">
+                    <label class="chat-markdown-toggle"><input id="v-chat-markdown" type="checkbox"> Markdown</label>
+                    <button type="button" id="v-chat-attach" class="btn-mini">Прикрепить фото</button>
+                    <input id="v-chat-image-input" type="file" accept="image/*" hidden>
+                    <span class="chat-hint">до 512 КБ · Ctrl+Enter — отправить</span>
+                </div>
+                <div id="v-chat-image-preview" class="chat-image-preview hidden">
+                    <img id="v-chat-image-preview-img" alt="Предпросмотр вложения">
+                    <span id="v-chat-image-preview-name"></span>
+                    <button type="button" id="v-chat-image-remove" class="btn-mini">Убрать</button>
+                </div>
+                <div id="v-chat-feedback" class="chat-feedback" aria-live="polite"></div>
             </section>
         </div>
     </div>
 
+    <script src="vendor/purify.min.js"></script>
+    <script src="vendor/marked.umd.js"></script>
     <script src="main.js"></script>
 </body>
 </html>

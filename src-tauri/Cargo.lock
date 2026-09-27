@@ -1003,6 +1003,7 @@ name = "fuck-exam"
 version = "0.2.2"
 dependencies = [
  "ashpd",
+ "base64 0.22.1",
  "dirs",
  "enumflags2",
  "futures-util",

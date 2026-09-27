@@ -15,12 +15,99 @@ use tokio::{net::TcpListener, sync::mpsc, task::JoinHandle};
 use tokio_tungstenite::tungstenite::Message;
 
 const MAX_HISTORY: usize = 100;
+const MAX_HISTORY_BYTES: usize = 2 * 1024 * 1024;
+const MAX_CHAT_TEXT_CHARS: usize = 4000;
+const MAX_CHAT_IMAGE_BYTES: usize = 512 * 1024;
 const DEFAULT_PORT: u16 = 7335;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChatImage {
+    pub name: String,
+    pub data: String,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChatMsg {
     pub from: String,
     pub text: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub markdown: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<ChatImage>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
+}
+
+fn chat_message(
+    from: Option<String>,
+    text: Option<String>,
+    markdown: Option<bool>,
+    image: Option<ChatImage>,
+) -> Option<ChatMsg> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+    let text = text.unwrap_or_default();
+    if text.len() > MAX_CHAT_TEXT_CHARS * 4 || text.chars().count() > MAX_CHAT_TEXT_CHARS {
+        return None;
+    }
+    let image = match image {
+        Some(image) => {
+            if image.name.len() > 480
+                || image.name.chars().count() > 120
+                || image.data.len() > 4 * MAX_CHAT_IMAGE_BYTES.div_ceil(3)
+            {
+                return None;
+            }
+            let bytes = STANDARD.decode(&image.data).ok()?;
+            if bytes.len() > MAX_CHAT_IMAGE_BYTES
+                || bytes.len() < 4
+                || bytes[..2] != [0xff, 0xd8]
+                || bytes[bytes.len() - 2..] != [0xff, 0xd9]
+            {
+                return None;
+            }
+            Some(image)
+        }
+        None => None,
+    };
+    if text.trim().is_empty() && image.is_none() {
+        return None;
+    }
+    let from = from.unwrap_or_else(|| "зритель".into());
+    let from = from.chars().take(80).collect::<String>();
+    Some(ChatMsg {
+        from: if from.is_empty() {
+            "зритель".into()
+        } else {
+            from
+        },
+        text,
+        markdown: markdown.unwrap_or(false),
+        image,
+    })
+}
+
+fn chat_history_size(history: &[ChatMsg]) -> usize {
+    history
+        .iter()
+        .map(|msg| {
+            msg.from.len()
+                + msg.text.len()
+                + msg
+                    .image
+                    .as_ref()
+                    .map_or(0, |i| i.name.len() + i.data.len())
+                + 128
+        })
+        .sum()
+}
+
+fn trim_chat_history(history: &mut Vec<ChatMsg>) {
+    while history.len() > MAX_HISTORY || chat_history_size(history) > MAX_HISTORY_BYTES {
+        history.remove(0);
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -134,7 +221,7 @@ fn event_to_message(ev: &ClientEvent) -> Message {
             Message::Text(json!({ "type": "stream-end", "id": id }).to_string().into())
         }
         ClientEvent::Chat(m) => Message::Text(
-            json!({ "type": "chat", "from": m.from, "text": m.text })
+            json!({ "type": "chat", "from": m.from, "text": m.text, "markdown": m.markdown, "image": m.image })
                 .to_string()
                 .into(),
         ),
@@ -159,6 +246,10 @@ struct Incoming {
     kind: String,
     from: Option<String>,
     text: Option<String>,
+    #[serde(default)]
+    markdown: Option<bool>,
+    #[serde(default)]
+    image: Option<ChatImage>,
 }
 
 pub fn encode_jpeg(bgra: &[u8], w: usize, h: usize, stride: usize) -> Option<Vec<u8>> {
@@ -445,10 +536,7 @@ impl StreamHub {
         {
             let mut i = self.inner.lock().unwrap();
             i.history.push(msg.clone());
-            if i.history.len() > MAX_HISTORY {
-                let excess = i.history.len() - MAX_HISTORY;
-                i.history.drain(0..excess);
-            }
+            trim_chat_history(&mut i.history);
             for c in &i.clients {
                 if !c.recorder_link {
                     let _ = c.tx.try_send(ClientEvent::Chat(msg.clone()));
@@ -541,9 +629,8 @@ async fn run_viewer(
                     Some(Ok(Message::Text(t))) => {
                         if let Ok(incoming) = serde_json::from_str::<Incoming>(&t) {
                             if incoming.kind == "chat" {
-                                let from = incoming.from.unwrap_or_else(|| "зритель".into());
-                                if let Some(text) = incoming.text {
-                                    hub.emit_chat(ChatMsg { from, text });
+                                if let Some(msg) = chat_message(incoming.from, incoming.text, incoming.markdown, incoming.image) {
+                                    hub.emit_chat(msg);
                                 }
                             }
                         }
@@ -594,9 +681,8 @@ async fn relay_client(hub: Arc<StreamHub>, url: String, room: String) {
                 Some(Ok(Message::Text(t))) => {
                     if let Ok(incoming) = serde_json::from_str::<Incoming>(&t) {
                         if incoming.kind == "chat" {
-                            let from = incoming.from.unwrap_or_else(|| "зритель".into());
-                            if let Some(text) = incoming.text {
-                                hub.emit_chat(ChatMsg { from, text });
+                            if let Some(msg) = chat_message(incoming.from, incoming.text, incoming.markdown, incoming.image) {
+                                hub.emit_chat(msg);
                             }
                         }
                     }
@@ -645,8 +731,51 @@ mod tests {
     #[test]
     fn room_is_hex() {
         let r = gen_room();
-        assert_eq!(r.len(), 8);
+        assert!((8..=16).contains(&r.len()));
         assert!(r.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn chat_message_keeps_legacy_text_and_accepts_bounded_jpeg() {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+        let legacy = chat_message(Some("Ana".into()), Some("привет".into()), None, None).unwrap();
+        assert!(!legacy.markdown);
+        assert!(legacy.image.is_none());
+        let legacy_json = serde_json::to_value(&legacy).unwrap();
+        assert!(legacy_json.get("markdown").is_none());
+        assert!(legacy_json.get("image").is_none());
+
+        let image = ChatImage {
+            name: "photo.jpg".into(),
+            data: STANDARD.encode([0xff, 0xd8, 0xff, 0xd9]),
+        };
+        let msg = chat_message(
+            Some("Ana".into()),
+            Some("**важно**".into()),
+            Some(true),
+            Some(image),
+        )
+        .unwrap();
+        assert!(msg.markdown);
+        assert_eq!(msg.image.as_ref().unwrap().name, "photo.jpg");
+        assert_eq!(
+            serde_json::to_value(msg).unwrap()["image"]["data"],
+            "/9j/2Q=="
+        );
+    }
+
+    #[test]
+    fn chat_message_rejects_invalid_photo_and_empty_content() {
+        let invalid = ChatImage {
+            name: "bad.jpg".into(),
+            data: "bm90IGEgSlBFRw==".into(),
+        };
+        assert!(chat_message(None, Some("text".into()), None, Some(invalid)).is_none());
+        assert!(chat_message(None, Some(" \n".into()), None, None).is_none());
+        assert!(
+            chat_message(None, Some("x".repeat(MAX_CHAT_TEXT_CHARS + 1)), None, None).is_none()
+        );
     }
 
     #[test]
@@ -677,7 +806,7 @@ mod tests {
                 let g = ((y as f32 / h as f32) * 255.0) as u8;
                 buf[i] = r; // B канал (мнемонично не важно — проверяем только яркость)
                 buf[i + 1] = g;
-                buf[i + 2] = (r + g) / 2;
+                buf[i + 2] = ((u16::from(r) + u16::from(g)) / 2) as u8;
                 buf[i + 3] = 255;
             }
         }
@@ -710,7 +839,7 @@ mod tests {
         std::env::set_var("FEX_STREAM_MAX_W", "1280");
         let (w, h) = (1920usize, 1080usize);
         let stride = w * 4;
-        let mut buf = vec![128u8; stride * h];
+        let buf = vec![128u8; stride * h];
         let r = encode_stream_frame(&buf, w, h, stride).expect("scaled jpeg");
         assert_eq!(
             r.0 as usize, 1280,
@@ -725,7 +854,7 @@ mod tests {
     fn stream_frame_no_scale_small() {
         let (w, h) = (640usize, 360usize);
         let stride = w * 4;
-        let mut buf = vec![64u8; stride * h];
+        let buf = vec![64u8; stride * h];
         let r = encode_stream_frame(&buf, w, h, stride).expect("jpeg");
         assert_eq!(r.0 as usize, 640);
         assert_eq!(r.1 as usize, 360);

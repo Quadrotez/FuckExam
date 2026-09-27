@@ -57,10 +57,7 @@ async fn relay_viewer_and_recorder() {
         .await
         .unwrap();
 
-    let bin = {
-        let mut v = vec![0xA7u8, 0x01, 0, 0, 1, 2, 3];
-        v
-    };
+    let bin = vec![0xA7u8, 0x01, 0, 0, 1, 2, 3];
     recorder.send(Message::Binary(bin.clone().into())).await.unwrap();
 
     // viewer должен получить streams и бинарный кадр
@@ -120,6 +117,58 @@ async fn relay_viewer_and_recorder() {
     recorder.send(Message::Close(None)).await.unwrap();
     let _ = tokio::time::timeout(Duration::from_secs(2), viewer.next()).await;
     let _ = tokio::time::timeout(Duration::from_secs(2), recorder.next()).await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn photo_and_markdown_chat_are_broadcast_and_kept_in_history() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let relay = std::sync::Arc::new(fuck_exam_relay::Relay::new());
+    let server = tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let relay = relay.clone();
+            tokio::spawn(async move {
+                let _ = fuck_exam_relay::handle_conn(relay, stream).await;
+            });
+        }
+    });
+    let url = format!("ws://127.0.0.1:{port}");
+
+    let mut recorder = connect(&url).await;
+    recorder.send(Message::Text(r#"{"type":"hello","role":"recorder","room":"photo-room"}"#.into())).await.unwrap();
+    let mut viewer = connect(&url).await;
+    viewer.send(Message::Text(r#"{"type":"hello","role":"viewer","room":"photo-room"}"#.into())).await.unwrap();
+    let welcome = tokio::time::timeout(Duration::from_secs(2), viewer.next()).await.unwrap().unwrap().unwrap();
+    assert!(matches!(welcome, Message::Text(t) if t.contains("welcome")));
+
+    viewer.send(Message::Text(
+        r#"{"type":"chat","from":"Ana","text":"**важно**","markdown":true,"image":{"name":"photo.jpg","data":"/9j/2Q=="}}"#.into(),
+    )).await.unwrap();
+    let forwarded = tokio::time::timeout(Duration::from_secs(2), recorder.next()).await.unwrap().unwrap().unwrap();
+    let payload: serde_json::Value = match forwarded {
+        Message::Text(text) => serde_json::from_str(&text).unwrap(),
+        other => panic!("expected forwarded chat, got {other:?}"),
+    };
+    assert_eq!(payload["type"], "chat");
+    assert_eq!(payload["markdown"], true);
+    assert_eq!(payload["image"]["name"], "photo.jpg");
+    assert_eq!(payload["image"]["data"], "/9j/2Q==");
+
+    let mut reconnect = connect(&url).await;
+    reconnect.send(Message::Text(r#"{"type":"hello","role":"viewer","room":"photo-room"}"#.into())).await.unwrap();
+    let welcome = tokio::time::timeout(Duration::from_secs(2), reconnect.next()).await.unwrap().unwrap().unwrap();
+    let history: serde_json::Value = match welcome {
+        Message::Text(text) => serde_json::from_str(&text).unwrap(),
+        other => panic!("expected room history, got {other:?}"),
+    };
+    assert_eq!(history["history"][0]["markdown"], true);
+    assert_eq!(history["history"][0]["image"]["name"], "photo.jpg");
+
+    let _ = viewer.send(Message::Close(None)).await;
+    let _ = reconnect.send(Message::Close(None)).await;
+    let _ = recorder.send(Message::Close(None)).await;
     server.abort();
 }
 

@@ -11,6 +11,9 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
 const MAX_HISTORY: usize = 100;
+const MAX_HISTORY_BYTES: usize = 2 * 1024 * 1024;
+const MAX_CHAT_TEXT_CHARS: usize = 4000;
+const MAX_CHAT_IMAGE_BYTES: usize = 512 * 1024;
 
 pub const DEFAULT_PORT: u16 = 7444;
 
@@ -22,6 +25,12 @@ struct Hello {
     room: String,
 }
 
+#[derive(Clone, Deserialize, serde::Serialize)]
+struct ChatImage {
+    name: String,
+    data: String,
+}
+
 #[derive(Clone)]
 struct StreamEntry {
     id: u32,
@@ -29,10 +38,96 @@ struct StreamEntry {
     h: u32,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize)]
 struct ChatMsg {
     from: String,
     text: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    markdown: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    image: Option<ChatImage>,
+}
+
+#[derive(Deserialize)]
+struct IncomingChat {
+    from: Option<String>,
+    text: Option<String>,
+    markdown: Option<bool>,
+    image: Option<ChatImage>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
+}
+
+fn validate_chat(
+    from: Option<String>,
+    text: Option<String>,
+    markdown: Option<bool>,
+    image: Option<ChatImage>,
+) -> Option<ChatMsg> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+    let text = text.unwrap_or_default();
+    if text.len() > MAX_CHAT_TEXT_CHARS * 4 || text.chars().count() > MAX_CHAT_TEXT_CHARS {
+        return None;
+    }
+    let image = match image {
+        Some(image) => {
+            if image.name.len() > 480
+                || image.name.chars().count() > 120
+                || image.data.len() > 4 * MAX_CHAT_IMAGE_BYTES.div_ceil(3)
+            {
+                return None;
+            }
+            let bytes = STANDARD.decode(&image.data).ok()?;
+            if bytes.len() > MAX_CHAT_IMAGE_BYTES
+                || bytes.len() < 4
+                || bytes[..2] != [0xff, 0xd8]
+                || bytes[bytes.len() - 2..] != [0xff, 0xd9]
+            {
+                return None;
+            }
+            Some(image)
+        }
+        None => None,
+    };
+    if text.trim().is_empty() && image.is_none() {
+        return None;
+    }
+    let from = from.unwrap_or_else(|| "зритель".into());
+    let from = from.chars().take(80).collect::<String>();
+    Some(ChatMsg {
+        from: if from.is_empty() {
+            "зритель".into()
+        } else {
+            from
+        },
+        text,
+        markdown: markdown.unwrap_or(false),
+        image,
+    })
+}
+
+fn chat_history_size(history: &[ChatMsg]) -> usize {
+    history
+        .iter()
+        .map(|msg| {
+            msg.from.len()
+                + msg.text.len()
+                + msg
+                    .image
+                    .as_ref()
+                    .map_or(0, |image| image.name.len() + image.data.len())
+                + 128
+        })
+        .sum()
+}
+
+fn trim_chat_history(history: &mut Vec<ChatMsg>) {
+    while history.len() > MAX_HISTORY || chat_history_size(history) > MAX_HISTORY_BYTES {
+        history.remove(0);
+    }
 }
 
 struct Room {
@@ -119,7 +214,9 @@ pub async fn handle_conn(relay: Arc<Relay>, stream: TcpStream) -> Result<(), Str
     if hello.room.is_empty() {
         let _ = sink
             .send(Message::Text(
-                json!({"type":"error","error":"room required"}).to_string().into(),
+                json!({"type":"error","error":"room required"})
+                    .to_string()
+                    .into(),
             ))
             .await;
         return Err("no room".into());
@@ -130,7 +227,9 @@ pub async fn handle_conn(relay: Arc<Relay>, stream: TcpStream) -> Result<(), Str
     if !is_recorder && role != "viewer" {
         let _ = sink
             .send(Message::Text(
-                json!({"type":"error","error":"unknown role"}).to_string().into(),
+                json!({"type":"error","error":"unknown role"})
+                    .to_string()
+                    .into(),
             ))
             .await;
         return Err("bad role".into());
@@ -159,7 +258,14 @@ pub async fn handle_conn(relay: Arc<Relay>, stream: TcpStream) -> Result<(), Str
             let history = r
                 .history
                 .iter()
-                .map(|m| json!({"from": m.from, "text": m.text}))
+                .map(|m| {
+                    json!({
+                        "from": m.from,
+                        "text": m.text,
+                        "markdown": m.markdown,
+                        "image": m.image
+                    })
+                })
                 .collect::<Vec<_>>();
             (streams, history)
         };
@@ -224,18 +330,18 @@ pub async fn handle_conn(relay: Arc<Relay>, stream: TcpStream) -> Result<(), Str
                                 _ => {}
                             }
                         } else if kind == "chat" {
-                            let from = v.get("from").and_then(|x| x.as_str()).unwrap_or("зритель").to_string();
-                            let text = v.get("text").and_then(|x| x.as_str()).unwrap_or("").to_string();
-                            if text.is_empty() {
-                                continue;
+                            if let Ok(incoming) = serde_json::from_value::<IncomingChat>(v) {
+                                if let Some(chat) = validate_chat(incoming.from, incoming.text, incoming.markdown, incoming.image) {
+                                    let mut payload = serde_json::to_value(&chat).unwrap_or_default();
+                                    if let Some(obj) = payload.as_object_mut() {
+                                        obj.insert("type".into(), json!("chat"));
+                                    }
+                                    let mut r = room.lock().unwrap();
+                                    r.history.push(chat);
+                                    trim_chat_history(&mut r.history);
+                                    r.broadcast_to(&Message::Text(payload.to_string().into()), true, true);
+                                }
                             }
-                            let mut r = room.lock().unwrap();
-                            r.history.push(ChatMsg { from: from.clone(), text: text.clone() });
-                            let excess = r.history.len().saturating_sub(MAX_HISTORY);
-                            if excess > 0 {
-                                r.history.drain(0..excess);
-                            }
-                            r.broadcast_to(&Message::Text(t.clone().into()), true, true);
                         }
                     }
                     Some(Ok(Message::Binary(b))) => {
@@ -264,6 +370,10 @@ pub async fn handle_conn(relay: Arc<Relay>, stream: TcpStream) -> Result<(), Str
             }
         }
     }
-    println!("{} left room '{}'", if is_recorder { "recorder" } else { "viewer" }, hello.room);
+    println!(
+        "{} left room '{}'",
+        if is_recorder { "recorder" } else { "viewer" },
+        hello.room
+    );
     Ok(())
 }
