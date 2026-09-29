@@ -532,6 +532,57 @@ impl StreamHub {
         }
     }
 
+    pub async fn send_chat(
+        &self,
+        text: String,
+        markdown: bool,
+        image: Option<ChatImage>,
+    ) -> Result<(), String> {
+        let msg = chat_message(
+            Some("транслятор".into()),
+            Some(text),
+            Some(markdown),
+            image,
+        )
+        .ok_or_else(|| "сообщение или фото не прошло проверку".to_string())?;
+
+        let relay_mode = {
+            let mode = self.mode.lock().unwrap();
+            if !mode.active {
+                return Err("сначала запустите трансляцию".into());
+            }
+            match mode.mode.as_str() {
+                "local" => false,
+                "relay" => true,
+                _ => return Err("режим трансляции не готов".into()),
+            }
+        };
+
+        if relay_mode {
+            let tx = self
+                .inner
+                .lock()
+                .unwrap()
+                .clients
+                .iter()
+                .find(|client| client.recorder_link)
+                .map(|client| client.tx.clone())
+                .ok_or_else(|| "подключение к relay ещё не готово".to_string())?;
+            tx.send(ClientEvent::Chat(msg.clone()))
+                .await
+                .map_err(|_| "соединение с relay закрыто".to_string())?;
+        }
+
+        // В relay-режиме это локальное отображение исходящего сообщения; в relay
+        // сервер отправляется только через recorder_link, чтобы не зациклить эхо.
+        self.emit_chat(msg);
+        Ok(())
+    }
+
+    pub fn chat_history(&self) -> Vec<ChatMsg> {
+        self.inner.lock().unwrap().history.clone()
+    }
+
     pub fn emit_chat(&self, msg: ChatMsg) {
         {
             let mut i = self.inner.lock().unwrap();
@@ -778,6 +829,55 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn recorder_chat_is_sent_to_local_viewers() {
+        let hub = Arc::new(StreamHub::default());
+        *hub.mode.lock().unwrap() = ModeState {
+            active: true,
+            mode: "local".into(),
+            ..ModeState::default()
+        };
+        let (_viewer_id, mut viewer_rx) = hub.register(false);
+
+        hub.send_chat("**ответ**".into(), true, None)
+            .await
+            .unwrap();
+
+        match viewer_rx.recv().await.unwrap() {
+            ClientEvent::Chat(msg) => {
+                assert_eq!(msg.from, "транслятор");
+                assert_eq!(msg.text, "**ответ**");
+                assert!(msg.markdown);
+            }
+            other => panic!("expected chat, got {other:?}"),
+        }
+        assert_eq!(hub.chat_history().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn recorder_chat_is_queued_for_relay_connection() {
+        let hub = Arc::new(StreamHub::default());
+        *hub.mode.lock().unwrap() = ModeState {
+            active: true,
+            mode: "relay".into(),
+            ..ModeState::default()
+        };
+        let (_relay_id, mut relay_rx) = hub.register(true);
+
+        hub.send_chat("ответ через relay".into(), false, None)
+            .await
+            .unwrap();
+
+        match relay_rx.recv().await.unwrap() {
+            ClientEvent::Chat(msg) => {
+                assert_eq!(msg.from, "транслятор");
+                assert_eq!(msg.text, "ответ через relay");
+            }
+            other => panic!("expected chat, got {other:?}"),
+        }
+        assert_eq!(hub.chat_history().len(), 1);
+    }
+
     #[test]
     fn event_to_message_binary_prefix() {
         let m = event_to_message(&ClientEvent::Video {
@@ -912,7 +1012,13 @@ mod tests {
 
         // чат от ws-viewer доходит наблюдателю
         ws.send(Message::Text(
-            json!({"type":"chat","from":"Ana","text":"preved"})
+            json!({
+                "type":"chat",
+                "from":"Ana",
+                "text":"**preved**",
+                "markdown":true,
+                "image":{"name":"photo.jpg","data":"/9j/2Q=="}
+            })
                 .to_string()
                 .into(),
         ))
@@ -928,7 +1034,10 @@ mod tests {
             {
                 ClientEvent::Chat(m) => {
                     assert_eq!(m.from, "Ana");
-                    assert_eq!(m.text, "preved");
+                    assert_eq!(m.text, "**preved**");
+                    assert!(m.markdown);
+                    assert_eq!(m.image.as_ref().unwrap().name, "photo.jpg");
+                    assert_eq!(m.image.as_ref().unwrap().data, "/9j/2Q==");
                     got_chat = true;
                     break;
                 }

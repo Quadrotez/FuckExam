@@ -153,6 +153,12 @@ h1 .accent { color: var(--accent); }
     overflow: hidden;
 }
 
+.rec-main > .btn-rec {
+    padding: 10px 24px;
+    font-size: 12px;
+    letter-spacing: 0.8px;
+}
+
 .btn-rec:hover:not(:disabled) {
     transform: translateY(-1px) scale(1.03);
     box-shadow:
@@ -277,6 +283,7 @@ h1 .accent { color: var(--accent); }
     justify-content: flex-start;
     overflow-y: auto;
     gap: 18px;
+    container-type: inline-size;
 }
 
 .role-cards {
@@ -568,7 +575,8 @@ h1.small { font-size: 26px; }
 
 .rec-layout {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 340px;
+    width: 100%;
+    grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
     gap: 18px;
     align-items: start;
 }
@@ -581,10 +589,26 @@ h1.small { font-size: 26px; }
     min-width: 0;
 }
 
-.rec-chat .chat-log {
-    height: calc(100vh - 140px);
-    min-height: 200px;
+.rec-chat .panel { max-width: none; }
+
+.chat-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 8px;
 }
+
+.chat-panel-header h3 { margin: 0; }
+
+.rec-chat .chat-log {
+    height: clamp(180px, calc(100vh - 340px), 520px);
+    min-height: 180px;
+}
+
+.rec-chat .chat-form { margin-top: 8px; }
+.rec-chat .chat-form .btn-sec { min-height: 40px; padding: 9px 14px; }
+.rec-chat .chat-form textarea { min-height: 40px; max-height: 120px; }
 
 .v-grid {
     width: 100%;
@@ -593,10 +617,56 @@ h1.small { font-size: 26px; }
     gap: 12px;
 }
 
-@media (max-width: 700px) {
-    .rec-layout { grid-template-columns: 1fr; }
+@container (max-width: 760px) {
+    .rec-layout { grid-template-columns: minmax(0, 1fr); }
     .rec-chat { position: static; }
-    .rec-chat .chat-log { height: 200px; }
+    .rec-chat .chat-log { height: clamp(150px, 30vh, 260px); min-height: 150px; }
+}
+
+@media (max-width: 700px) {
+    .container-wide { padding: 20px 16px; }
+    .v-grid { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+}
+
+html[data-chat-window="true"] body { overflow: hidden; }
+html[data-chat-window="true"] .scanlines,
+html[data-chat-window="true"] .vignette,
+html[data-chat-window="true"] #view-landing,
+html[data-chat-window="true"] #view-viewer { display: none !important; }
+html[data-chat-window="true"] #view-recorder {
+    display: block !important;
+    height: 100%;
+    overflow: hidden;
+}
+html[data-chat-window="true"] #view-recorder > .container-wide {
+    display: block;
+    height: 100%;
+    padding: 10px;
+    overflow: hidden;
+}
+html[data-chat-window="true"] #view-recorder header,
+html[data-chat-window="true"] #view-recorder .rec-main { display: none !important; }
+html[data-chat-window="true"] #view-recorder .rec-layout {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+html[data-chat-window="true"] #view-recorder .rec-chat {
+    position: static;
+    height: 100%;
+}
+html[data-chat-window="true"] #view-recorder .chat-panel {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    padding: 12px;
+}
+html[data-chat-window="true"] #rec-chat-popout { display: none; }
+html[data-chat-window="true"] #view-recorder .chat-log {
+    flex: 1;
+    height: auto;
+    min-height: 0;
+    max-height: none;
 }
 
 .v-cell {

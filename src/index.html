@@ -101,9 +101,28 @@
                 </div>
 
                 <aside class="rec-chat">
-                    <section class="panel chat-ro">
-                        <h3>Чат зрителей <span class="dim">(только чтение)</span></h3>
+                    <section class="panel chat-panel">
+                        <div class="chat-panel-header">
+                            <h3>Чат трансляции</h3>
+                            <button id="rec-chat-popout" type="button" class="btn-mini" title="Открыть только чат в отдельном окне">↗ Отдельное окно</button>
+                        </div>
                         <div id="chat-log" class="chat-log"></div>
+                        <form id="rec-chat-form" class="chat-form">
+                            <textarea id="rec-chat-input" rows="2" maxlength="4000" placeholder="Сообщение от транслятора…" autocomplete="off"></textarea>
+                            <button type="submit" class="btn-sec" id="rec-chat-send" title="Отправить">➤</button>
+                        </form>
+                        <div class="chat-tools">
+                            <label class="chat-markdown-toggle"><input id="rec-chat-markdown" type="checkbox"> Markdown</label>
+                            <button type="button" id="rec-chat-attach" class="btn-mini">Прикрепить фото</button>
+                            <input id="rec-chat-image-input" type="file" accept="image/*" hidden>
+                            <span class="chat-hint">до 512 КБ · Enter — отправить · Ctrl+Enter — новая строка</span>
+                        </div>
+                        <div id="rec-chat-image-preview" class="chat-image-preview hidden">
+                            <img id="rec-chat-image-preview-img" alt="Предпросмотр вложения">
+                            <span id="rec-chat-image-preview-name"></span>
+                            <button type="button" id="rec-chat-image-remove" class="btn-mini">Убрать</button>
+                        </div>
+                        <div id="rec-chat-feedback" class="chat-feedback" aria-live="polite"></div>
                     </section>
                 </aside>
             </div>

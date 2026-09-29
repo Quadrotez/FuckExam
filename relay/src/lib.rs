@@ -165,6 +165,28 @@ impl Room {
     }
 }
 
+fn broadcast_chat(room: &Arc<Mutex<Room>>, value: serde_json::Value, include_recorder: bool) {
+    let Ok(incoming) = serde_json::from_value::<IncomingChat>(value) else {
+        return;
+    };
+    let Some(chat) = validate_chat(incoming.from, incoming.text, incoming.markdown, incoming.image)
+    else {
+        return;
+    };
+    let mut payload = serde_json::to_value(&chat).unwrap_or_default();
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("type".into(), json!("chat"));
+    }
+    let mut room = room.lock().unwrap();
+    room.history.push(chat);
+    trim_chat_history(&mut room.history);
+    room.broadcast_to(
+        &Message::Text(payload.to_string().into()),
+        include_recorder,
+        true,
+    );
+}
+
 pub struct Relay {
     rooms: Mutex<HashMap<String, Arc<Mutex<Room>>>>,
 }
@@ -327,21 +349,11 @@ pub async fn handle_conn(relay: Arc<Relay>, stream: TcpStream) -> Result<(), Str
                                     r.streams.retain(|s| s.id != id);
                                     r.broadcast_to(&Message::Text(t.clone().into()), false, true);
                                 }
+                                "chat" => broadcast_chat(&room, v, false),
                                 _ => {}
                             }
                         } else if kind == "chat" {
-                            if let Ok(incoming) = serde_json::from_value::<IncomingChat>(v) {
-                                if let Some(chat) = validate_chat(incoming.from, incoming.text, incoming.markdown, incoming.image) {
-                                    let mut payload = serde_json::to_value(&chat).unwrap_or_default();
-                                    if let Some(obj) = payload.as_object_mut() {
-                                        obj.insert("type".into(), json!("chat"));
-                                    }
-                                    let mut r = room.lock().unwrap();
-                                    r.history.push(chat);
-                                    trim_chat_history(&mut r.history);
-                                    r.broadcast_to(&Message::Text(payload.to_string().into()), true, true);
-                                }
-                            }
+                            broadcast_chat(&room, v, true);
                         }
                     }
                     Some(Ok(Message::Binary(b))) => {

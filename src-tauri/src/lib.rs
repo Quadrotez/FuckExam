@@ -13,7 +13,7 @@ pub mod streaming;
 
 use serde::Serialize;
 use std::sync::Arc;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -77,6 +77,42 @@ async fn relay_ping(url: String) -> Result<String, String> {
     streaming::ping_relay(url).await
 }
 
+#[tauri::command]
+async fn chat_send(
+    state: State<'_, streaming::Streaming>,
+    text: String,
+    markdown: bool,
+    image: Option<streaming::ChatImage>,
+) -> Result<(), String> {
+    state.0.send_chat(text, markdown, image).await
+}
+
+#[tauri::command]
+fn chat_history(state: State<'_, streaming::Streaming>) -> Vec<streaming::ChatMsg> {
+    state.0.chat_history()
+}
+
+#[tauri::command]
+async fn open_chat_window(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("chat") {
+        window.show().map_err(|e| format!("show chat window: {e}"))?;
+        window
+            .set_focus()
+            .map_err(|e| format!("focus chat window: {e}"))?;
+        return Ok(());
+    }
+
+    WebviewWindowBuilder::new(&app, "chat", WebviewUrl::App("index.html".into()))
+        .title("FuckExam — Чат")
+        .inner_size(420.0, 620.0)
+        .min_inner_size(320.0, 320.0)
+        .resizable(true)
+        .center()
+        .build()
+        .map(|_| ())
+        .map_err(|e| format!("open chat window: {e}"))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let hub = Arc::new(streaming::StreamHub::default());
@@ -95,7 +131,10 @@ pub fn run() {
             relay_connect,
             stream_status,
             stream_stop,
-            relay_ping
+            relay_ping,
+            chat_send,
+            chat_history,
+            open_chat_window
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

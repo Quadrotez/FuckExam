@@ -1,5 +1,6 @@
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
+const isChatWindow = window.__TAURI__.window?.getCurrentWindow?.().label === 'chat';
 
 const $ = (id) => document.getElementById(id);
 let runtimePlatform = null;
@@ -435,10 +436,24 @@ sRelayCheck.addEventListener('click', async () => {
 setSeg('local');
 
 const recChatLog = $('chat-log');
+const recChatForm = $('rec-chat-form');
+const recChatInput = $('rec-chat-input');
+const recChatMarkdown = $('rec-chat-markdown');
+const recChatAttach = $('rec-chat-attach');
+const recChatImageInput = $('rec-chat-image-input');
+const recChatImagePreview = $('rec-chat-image-preview');
+const recChatImagePreviewImg = $('rec-chat-image-preview-img');
+const recChatImagePreviewName = $('rec-chat-image-preview-name');
+const recChatImageRemove = $('rec-chat-image-remove');
+const recChatFeedback = $('rec-chat-feedback');
+const recChatPopout = $('rec-chat-popout');
 
 const MAX_CHAT_TEXT_LENGTH = 4000;
 const MAX_CHAT_IMAGE_BYTES = 512 * 1024;
 const MAX_CHAT_IMAGE_BASE64_LENGTH = 4 * Math.ceil(MAX_CHAT_IMAGE_BYTES / 3);
+let pendingRecorderChatImage = null;
+let chatHistoryPending = isChatWindow;
+let chatEventsDuringHistory = [];
 
 function isValidChatImage(image) {
     if (!image || typeof image.data !== 'string' || typeof image.name !== 'string') return false;
@@ -470,7 +485,8 @@ function appendChatMessage(log, msg) {
     if (text) {
         const body = document.createElement('span');
         body.className = 'text';
-        if (msg.markdown === true && window.marked && window.DOMPurify) {
+        if (msg.markdown === true && typeof window.marked?.parse === 'function' &&
+            typeof window.DOMPurify?.sanitize === 'function') {
             try {
                 const html = window.marked.parse(text, { gfm: true, breaks: true });
                 body.classList.add('markdown');
@@ -482,10 +498,14 @@ function appendChatMessage(log, msg) {
                     link.target = '_blank';
                     link.rel = 'noopener noreferrer';
                 });
-            } catch (_) {
+            } catch (err) {
+                console.warn('[fuckexam] Markdown rendering failed:', err);
                 body.textContent = text;
             }
         } else {
+            if (msg.markdown === true) {
+                console.error('[fuckexam] Markdown was requested but Marked/DOMPurify is unavailable.');
+            }
             body.textContent = text;
         }
         div.appendChild(body);
@@ -511,18 +531,22 @@ function escapeHtml(s) {
     );
 }
 
-listen('stream-chat', (evt) => {
-    const m = evt.payload;
-    if (typeof m === 'string') {
+const chatEventSubscription = listen('stream-chat', (evt) => {
+    const payload = evt.payload;
+    let msg = null;
+    if (typeof payload === 'string') {
         try {
-            const parsed = JSON.parse(m);
-            appendChatMessage(recChatLog, parsed.from ? parsed : { from: '?', text: m });
+            const parsed = JSON.parse(payload);
+            msg = parsed && parsed.from ? parsed : { from: '?', text: payload };
         } catch (_) {
-            appendChatMessage(recChatLog, { from: '?', text: m });
+            msg = { from: '?', text: payload };
         }
-    } else if (m && m.from) {
-        appendChatMessage(recChatLog, m);
+    } else if (payload && payload.from) {
+        msg = payload;
     }
+    if (!msg) return;
+    if (chatHistoryPending) chatEventsDuringHistory.push(msg);
+    else appendChatMessage(recChatLog, msg);
 });
 
 /* ---------------- viewer ---------------- */
@@ -578,14 +602,43 @@ function imageBlobToDataUrl(blob) {
     });
 }
 
+async function decodeChatImage(file) {
+    if (typeof createImageBitmap === 'function') {
+        try {
+            return await createImageBitmap(file);
+        } catch (_) {
+            // Older WebKitGTK versions may expose createImageBitmap without
+            // supporting every image format; retry through a regular Image.
+        }
+    }
+
+    const url = URL.createObjectURL(file);
+    return new Promise((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => resolve({
+            width: image.naturalWidth,
+            height: image.naturalHeight,
+            image,
+            close: () => URL.revokeObjectURL(url),
+        });
+        image.onerror = () => {
+            URL.revokeObjectURL(url);
+            reject(new Error('не удалось открыть фото в этом браузере'));
+        };
+        image.src = url;
+    });
+}
+
 async function prepareChatImage(file) {
     const supportedTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/bmp', 'image/avif'];
-    if (!supportedTypes.includes(String(file.type).toLowerCase())) {
+    const mimeType = String(file.type || '').toLowerCase();
+    const supportedName = /\.(?:jpe?g|png|webp|gif|bmp|avif)$/i.test(String(file.name || ''));
+    if (!supportedTypes.includes(mimeType) && !supportedName) {
         throw new Error('Выберите JPEG, PNG, WebP, GIF, BMP или AVIF-фото.');
     }
     if (file.size > 15 * 1024 * 1024) throw new Error('Исходный файл больше 15 МБ.');
 
-    const bitmap = await createImageBitmap(file);
+    const bitmap = await decodeChatImage(file);
     try {
         if (bitmap.width * bitmap.height > 30_000_000) {
             throw new Error('Размер фото превышает 30 мегапикселей.');
@@ -594,7 +647,9 @@ async function prepareChatImage(file) {
         const canvas = document.createElement('canvas');
         canvas.width = Math.max(1, Math.round(bitmap.width * scale));
         canvas.height = Math.max(1, Math.round(bitmap.height * scale));
-        canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+        const context = canvas.getContext('2d');
+        if (!context) throw new Error('Обработка фото недоступна в этом браузере.');
+        context.drawImage(bitmap.image || bitmap, 0, 0, canvas.width, canvas.height);
 
         let blob = null;
         for (const quality of [0.82, 0.72, 0.62, 0.52, 0.42]) {
@@ -913,9 +968,126 @@ vChatForm.addEventListener('submit', (e) => {
     }
 });
 
+function setRecorderChatFeedback(text, kind = '') {
+    recChatFeedback.textContent = text;
+    recChatFeedback.classList.toggle('error', kind === 'error');
+    recChatFeedback.classList.toggle('success', kind === 'success');
+}
+
+function clearPendingRecorderChatImage() {
+    pendingRecorderChatImage = null;
+    recChatImagePreviewImg.removeAttribute('src');
+    recChatImagePreviewName.textContent = '';
+    recChatImagePreview.classList.add('hidden');
+}
+
+recChatPopout.addEventListener('click', async () => {
+    try {
+        await invoke('open_chat_window');
+    } catch (err) {
+        setRecorderChatFeedback('Не удалось открыть отдельный чат: ' + String(err), 'error');
+    }
+});
+
+recChatAttach.addEventListener('click', () => recChatImageInput.click());
+recChatImageInput.addEventListener('change', async () => {
+    const file = recChatImageInput.files?.[0];
+    recChatImageInput.value = '';
+    if (!file) return;
+    recChatAttach.disabled = true;
+    setRecorderChatFeedback('Обработка фото…');
+    try {
+        pendingRecorderChatImage = await prepareChatImage(file);
+        recChatImagePreviewImg.src = `data:image/jpeg;base64,${pendingRecorderChatImage.data}`;
+        recChatImagePreviewName.textContent = pendingRecorderChatImage.name;
+        recChatImagePreview.classList.remove('hidden');
+        setRecorderChatFeedback('Фото готово к отправке.');
+    } catch (err) {
+        clearPendingRecorderChatImage();
+        setRecorderChatFeedback(String(err), 'error');
+    } finally {
+        recChatAttach.disabled = false;
+    }
+});
+recChatImageRemove.addEventListener('click', () => {
+    clearPendingRecorderChatImage();
+    setRecorderChatFeedback('Фото удалено.');
+});
+recChatInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.ctrlKey && !e.shiftKey && !e.metaKey && !e.isComposing) {
+        e.preventDefault();
+        recChatForm.requestSubmit();
+    }
+});
+recChatForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const text = recChatInput.value.trim();
+    if (!text && !pendingRecorderChatImage) return;
+    if (text.length > MAX_CHAT_TEXT_LENGTH) {
+        setRecorderChatFeedback(`Сообщение слишком длинное (максимум ${MAX_CHAT_TEXT_LENGTH} символов).`, 'error');
+        return;
+    }
+
+    recChatInput.disabled = true;
+    recChatAttach.disabled = true;
+    $('rec-chat-send').disabled = true;
+    try {
+        await invoke('chat_send', {
+            text,
+            markdown: recChatMarkdown.checked,
+            image: pendingRecorderChatImage,
+        });
+        recChatInput.value = '';
+        clearPendingRecorderChatImage();
+        setRecorderChatFeedback('Сообщение отправлено.', 'success');
+    } catch (err) {
+        setRecorderChatFeedback(String(err), 'error');
+    } finally {
+        recChatInput.disabled = false;
+        recChatAttach.disabled = false;
+        $('rec-chat-send').disabled = false;
+    }
+});
+
+function chatMessageKey(msg) {
+    const image = msg.image ? [msg.image.name, msg.image.data] : null;
+    return JSON.stringify([msg.from, msg.text, msg.markdown === true, image]);
+}
+
+async function populateDetachedChatHistory() {
+    try {
+        await chatEventSubscription;
+        const history = await invoke('chat_history');
+        const snapshotCounts = new Map();
+        history.forEach((msg) => {
+            appendChatMessage(recChatLog, msg);
+            const key = chatMessageKey(msg);
+            snapshotCounts.set(key, (snapshotCounts.get(key) || 0) + 1);
+        });
+        chatEventsDuringHistory.forEach((msg) => {
+            const key = chatMessageKey(msg);
+            const count = snapshotCounts.get(key) || 0;
+            if (count > 0) snapshotCounts.set(key, count - 1);
+            else appendChatMessage(recChatLog, msg);
+        });
+    } catch (err) {
+        console.error('[fuckexam] chat history load failed:', err);
+        chatEventsDuringHistory.forEach((msg) => appendChatMessage(recChatLog, msg));
+    } finally {
+        chatEventsDuringHistory = [];
+        chatHistoryPending = false;
+    }
+}
+
 /* ---------------- boot ---------------- */
 
 loadSettings();
 checkPlatformAtStartup();
-refresh();
-showView('landing');
+if (isChatWindow) {
+    document.documentElement.dataset.chatWindow = 'true';
+    showView('recorder');
+    void populateDetachedChatHistory();
+} else {
+    refresh();
+    showView('landing');
+}

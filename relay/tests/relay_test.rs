@@ -156,6 +156,37 @@ async fn photo_and_markdown_chat_are_broadcast_and_kept_in_history() {
     assert_eq!(payload["image"]["name"], "photo.jpg");
     assert_eq!(payload["image"]["data"], "/9j/2Q==");
 
+    // viewer receives its own message, with markdown and photo preserved
+    let viewer_echo = tokio::time::timeout(Duration::from_secs(2), viewer.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let viewer_payload: serde_json::Value = match viewer_echo {
+        Message::Text(text) => serde_json::from_str(&text).unwrap(),
+        other => panic!("expected viewer chat echo, got {other:?}"),
+    };
+    assert_eq!(viewer_payload["markdown"], true);
+    assert_eq!(viewer_payload["image"]["data"], "/9j/2Q==");
+
+    // recorder replies back into the room; it must reach the viewer, preserving both fields.
+    recorder.send(Message::Text(
+        r#"{"type":"chat","from":"Транслятор","text":"**ответ**","markdown":true,"image":{"name":"reply.jpg","data":"/9j/2Q=="}}"#.into(),
+    )).await.unwrap();
+    let reply = tokio::time::timeout(Duration::from_secs(2), viewer.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let reply_payload: serde_json::Value = match reply {
+        Message::Text(text) => serde_json::from_str(&text).unwrap(),
+        other => panic!("expected recorder reply, got {other:?}"),
+    };
+    assert_eq!(reply_payload["type"], "chat");
+    assert_eq!(reply_payload["from"], "Транслятор");
+    assert_eq!(reply_payload["markdown"], true);
+    assert_eq!(reply_payload["image"]["name"], "reply.jpg");
+
     let mut reconnect = connect(&url).await;
     reconnect.send(Message::Text(r#"{"type":"hello","role":"viewer","room":"photo-room"}"#.into())).await.unwrap();
     let welcome = tokio::time::timeout(Duration::from_secs(2), reconnect.next()).await.unwrap().unwrap().unwrap();
@@ -165,6 +196,9 @@ async fn photo_and_markdown_chat_are_broadcast_and_kept_in_history() {
     };
     assert_eq!(history["history"][0]["markdown"], true);
     assert_eq!(history["history"][0]["image"]["name"], "photo.jpg");
+    assert_eq!(history["history"][1]["from"], "Транслятор");
+    assert_eq!(history["history"][1]["markdown"], true);
+    assert_eq!(history["history"][1]["image"]["name"], "reply.jpg");
 
     let _ = viewer.send(Message::Close(None)).await;
     let _ = reconnect.send(Message::Close(None)).await;

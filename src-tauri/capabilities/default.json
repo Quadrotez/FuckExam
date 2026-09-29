@@ -2,6 +2,6 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Базовый доступ десктопного окна",
-  "windows": ["main"],
+  "windows": ["main", "chat"],
   "permissions": ["core:default"]
 }
