@@ -15,7 +15,7 @@ use serde::Serialize;
 use std::sync::Arc;
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
-const APP_ICON: tauri::image::Image<'static> = tauri::include_image!('./icons/32x32.png');
+const APP_ICON: tauri::image::Image<'static> = tauri::include_image!("./icons/32x32.png");
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
