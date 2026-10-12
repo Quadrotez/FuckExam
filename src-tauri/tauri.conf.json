@@ -8,14 +8,12 @@
   },
   "app": {
     "withGlobalTauri": true,
-    "enableGTKAppId": true,
+    "enableGTKAppId": false,
     "windows": [
       {
         "title": "FuckExam",
         "width": 880,
         "height": 740,
-        "minWidth": 320,
-        "minHeight": 360,
         "resizable": true,
         "center": true
       }
@@ -31,8 +29,8 @@
       "webviewInstallMode": { "type": "downloadBootstrapper" }
     },
     "linux": {
-      "desktopTemplate": "linux/fuck-exam.desktop.hbs",
       "deb": {
+        "desktopTemplate": "linux/fuck-exam.desktop.hbs",
         "depends": [
           "libgstreamer1.0-0",
           "gstreamer1.0-plugins-base",

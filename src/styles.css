@@ -47,7 +47,7 @@ html, body {
 
 .container {
     position: relative; z-index: 1;
-    height: 100%; width: 100%;
+    height: 100%; width: 100%; min-width: 0;
     display: flex; flex-direction: column;
     align-items: center; justify-content: center;
     gap: 24px;
@@ -294,7 +294,7 @@ h1 .accent { color: var(--accent); }
 
 .role-card {
     cursor: pointer;
-    width: 220px; padding: 26px 20px;
+    width: min(220px, 100%); padding: 26px 20px;
     background: var(--surface);
     border: 1px solid rgba(255,40,40,0.15);
     border-radius: var(--radius);
@@ -513,7 +513,7 @@ h1.small { font-size: 26px; }
 }
 
 .v-form input {
-    flex: 1; min-width: 180px;
+    flex: 1; min-width: min(180px, 100%);
     background: rgba(0,0,0,0.45);
     border: 1px solid rgba(255,40,40,0.15);
     border-radius: 10px;
@@ -575,7 +575,7 @@ h1.small { font-size: 26px; }
 
 .rec-layout {
     display: grid;
-    width: 100%;
+    width: 100%; min-width: 0;
     grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
     gap: 18px;
     align-items: start;
@@ -626,6 +626,15 @@ h1.small { font-size: 26px; }
 @media (max-width: 700px) {
     .container-wide { padding: 20px 16px; }
     .v-grid { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+}
+
+@media (max-width: 380px) {
+    .container { padding: 20px 12px; }
+    .container-wide { padding: 12px; }
+    .s-actions { gap: 6px; }
+    .s-actions .btn-sec { flex: 1; min-width: 0; padding-left: 8px; padding-right: 8px; }
+    .chat-panel-header { align-items: flex-start; flex-wrap: wrap; }
+    .v-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
 html[data-chat-window="true"] body { overflow: hidden; }
