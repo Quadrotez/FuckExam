@@ -15,6 +15,8 @@ use serde::Serialize;
 use std::sync::Arc;
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
+const APP_ICON: tauri::image::Image<'static> = tauri::include_image!('./icons/32x32.png');
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlatformInfo {
@@ -115,8 +117,22 @@ async fn open_chat_window(app: AppHandle) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("DISPLAY").is_some() {
+        // KDE/Wayland normally provides XWayland. Using it here gives the
+        // window a real native taskbar icon while keeping multiple processes
+        // possible (GTK application IDs are deliberately disabled).
+        std::env::set_var("GDK_BACKEND", "x11");
+    }
+
     let hub = Arc::new(streaming::StreamHub::default());
     tauri::Builder::default()
+        .setup(|app| {
+            if let Some(window) = app.get_webview_window("main") {
+                window.set_icon(APP_ICON.clone())?;
+            }
+            Ok(())
+        })
         .manage(capture::Recorder {
             inner: std::sync::Mutex::new(None),
             hub: hub.clone(),
