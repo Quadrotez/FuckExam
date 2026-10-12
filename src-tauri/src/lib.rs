@@ -117,6 +117,12 @@ async fn open_chat_window(app: AppHandle) -> Result<(), String> {
 pub fn run() {
     let hub = Arc::new(streaming::StreamHub::default());
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .manage(capture::Recorder {
             inner: std::sync::Mutex::new(None),
             hub: hub.clone(),
