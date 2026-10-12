@@ -184,6 +184,9 @@ const sModeWrap = $('seg-mode');
 const sPort = $('s-port');
 const sRelayUrl = $('s-relay-url');
 const sRoom = $('s-room');
+const sFps = $('s-fps');
+const sQuality = $('s-quality');
+const sMaxw = $('s-maxw');
 const sStart = $('s-start');
 const sStop = $('s-stop');
 const sStatusEl = $('s-status');
@@ -201,6 +204,9 @@ function loadSettings() {
         if (s.port) sPort.value = s.port;
         if (s.relayUrl) sRelayUrl.value = s.relayUrl;
         if (s.relayRoom) sRoom.value = s.relayRoom;
+        if (s.fps) sFps.value = s.fps;
+        if (s.quality) sQuality.value = s.quality;
+        if (s.maxWidth) sMaxw.value = s.maxWidth;
         if (s.viewerUrl) vUrl.value = s.viewerUrl;
         if (s.viewerRoom) vRoom.value = s.viewerRoom;
         if (s.viewerName) vName.value = s.viewerName;
@@ -215,6 +221,9 @@ function saveSettings() {
                 port: sPort.value,
                 relayUrl: sRelayUrl.value,
                 relayRoom: sRoom.value,
+                fps: sFps.value,
+                quality: sQuality.value,
+                maxWidth: sMaxw.value,
                 viewerUrl: vUrl.value,
                 viewerRoom: vRoom.value,
                 viewerName: vName.value,
@@ -232,7 +241,7 @@ function setSeg(mode) {
         b.classList.toggle('active', b.dataset.mode === mode);
     });
     const relayOnly = mode === 'relay';
-    document.querySelectorAll('.s-field').forEach((f) => {
+    document.querySelectorAll('.s-field[data-field]').forEach((f) => {
         const isPort = f.dataset.field === 'port';
         f.style.display = relayOnly === isPort ? 'none' : 'flex';
     });
@@ -376,14 +385,21 @@ async function streamStart() {
             relayUrl = 'ws://' + relayUrl;
             sRelayUrl.value = relayUrl;
         }
+        const perf = {
+            fps: parseInt(sFps.value, 10) || 24,
+            quality: parseInt(sQuality.value, 10) || 75,
+            maxWidth: parseInt(sMaxw.value, 10) || 1280,
+        };
         const st =
             sMode === 'local'
                 ? await invoke('stream_start', {
                       port: parseInt(sPort.value, 10) || 7335,
+                      ...perf,
                   })
                 : await invoke('relay_connect', {
                       url: relayUrl,
                       room: sRoom.value.trim() || null,
+                      ...perf,
                   });
         saveSettings();
         renderSStatus(st);

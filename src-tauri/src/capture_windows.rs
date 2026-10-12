@@ -150,6 +150,7 @@ impl GraphicsCaptureApiHandler for Capture {
             self.width as usize,
             self.height as usize,
             self.width as usize * 4,
+            &self.hub.config(),
         ) {
             if self.last_jpeg.as_ref() != Some(&jpeg) {
                 self.last_jpeg = Some(jpeg.clone());

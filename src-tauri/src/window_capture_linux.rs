@@ -227,6 +227,7 @@ fn writer_loop(
     let mut next = Instant::now();
     let mut next_push = Instant::now();
     let mut last_push: Option<(u32, u32, Vec<u8>)> = None;
+    let mut last_raw: Option<Vec<u8>> = None;
 
     while !stop.load(Ordering::Relaxed) {
         let now = Instant::now();
@@ -271,27 +272,41 @@ fn writer_loop(
 
         let now2 = Instant::now();
         if let Some(hub) = &stream {
-            if now2 >= next_push && stride != 0 && data.len() >= stride * h as usize {
-                next_push = now2 + Duration::from_millis(100);
-                if let Some((pw, ph, jpeg)) =
-                    streaming::encode_stream_frame(&data, w as usize, h as usize, stride)
-                {
-                    // пропускаем побитово одинаковые кадры (статичные окна не спамят стрим)
-                    let same = last_push
-                        .as_ref()
-                        .map(|(_, _, j)| j == &jpeg)
-                        .unwrap_or(false);
-                    last_push = Some((pw, ph, jpeg.clone()));
-                    if !same {
-                        if std::env::var_os("FEX_DEBUG").is_some() {
-                            eprintln!(
-                                "[fuckexam] window {node_id}: push jpeg {pw}x{ph} ({} bytes)",
-                                jpeg.len()
-                            );
+            if hub.is_active()
+                && now2 >= next_push
+                && stride != 0
+                && data.len() >= stride * h as usize
+            {
+                let config = hub.config();
+                let push_interval =
+                    Duration::from_millis((1000u64 / u64::from(config.fps.max(1))).max(1));
+                next_push = now2 + push_interval;
+
+                // Пропускаем энкод, только если сырой кадр точно не изменился
+                // (точное сравнение — небольшие изменения вроде курсора не теряются).
+                let changed = last_raw.as_deref() != Some(data.as_slice());
+                if changed {
+                    if let Some((pw, ph, jpeg)) = streaming::encode_stream_frame(
+                        &data, w as usize, h as usize, stride, &config,
+                    ) {
+                        // пропускаем побитово одинаковые кадры (статичные окна не спамят стрим)
+                        let same = last_push
+                            .as_ref()
+                            .map(|(_, _, j)| j == &jpeg)
+                            .unwrap_or(false);
+                        last_push = Some((pw, ph, jpeg.clone()));
+                        if !same {
+                            if std::env::var_os("FEX_DEBUG").is_some() {
+                                eprintln!(
+                                    "[fuckexam] window {node_id}: push jpeg {pw}x{ph} ({} bytes)",
+                                    jpeg.len()
+                                );
+                            }
+                            hub.push_video(node_id, pw, ph, jpeg);
                         }
-                        hub.push_video(node_id, pw, ph, jpeg);
                     }
                 }
+                last_raw = Some(data);
             }
         }
     }

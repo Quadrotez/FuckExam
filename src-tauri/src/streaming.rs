@@ -19,6 +19,9 @@ const MAX_HISTORY_BYTES: usize = 2 * 1024 * 1024;
 const MAX_CHAT_TEXT_CHARS: usize = 4000;
 const MAX_CHAT_IMAGE_BYTES: usize = 512 * 1024;
 const DEFAULT_PORT: u16 = 7335;
+const DEFAULT_STREAM_FPS: u32 = 24;
+const DEFAULT_JPEG_QUALITY: u8 = 75;
+const DEFAULT_STREAM_MAX_WIDTH: usize = 1280;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChatImage {
@@ -110,6 +113,56 @@ fn trim_chat_history(history: &mut Vec<ChatMsg>) {
     }
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamConfig {
+    pub fps: u32,
+    pub quality: u8,
+    pub max_width: usize,
+}
+
+impl Default for StreamConfig {
+    fn default() -> Self {
+        Self {
+            fps: DEFAULT_STREAM_FPS,
+            quality: DEFAULT_JPEG_QUALITY,
+            max_width: DEFAULT_STREAM_MAX_WIDTH,
+        }
+    }
+}
+
+impl StreamConfig {
+    /// Заменяет нулевые/выходящие за границы поля значениями из env или дефолтом.
+    pub fn normalized(self) -> Self {
+        let env_fps = std::env::var("FEX_STREAM_FPS")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok());
+        let env_quality = std::env::var("FEX_JPEG_QUALITY")
+            .ok()
+            .and_then(|v| v.parse::<u8>().ok());
+        let env_max_width = std::env::var("FEX_STREAM_MAX_W")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok());
+        StreamConfig {
+            fps: if (1..=60).contains(&self.fps) {
+                self.fps
+            } else {
+                env_fps.unwrap_or(DEFAULT_STREAM_FPS).clamp(1, 60)
+            },
+            quality: if (1..=100).contains(&self.quality) {
+                self.quality
+            } else {
+                env_quality.unwrap_or(DEFAULT_JPEG_QUALITY).clamp(1, 100)
+            },
+            max_width: if self.max_width >= 64 {
+                self.max_width
+            } else {
+                env_max_width.unwrap_or(DEFAULT_STREAM_MAX_WIDTH).max(64)
+            },
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StreamEntry {
     pub id: u32,
@@ -181,6 +234,7 @@ pub struct StreamHub {
     inner: Mutex<HubInner>,
     app: Mutex<Option<AppHandle>>,
     mode: Mutex<ModeState>,
+    config: Mutex<StreamConfig>,
     stop: Arc<AtomicBool>,
     task: Mutex<Option<JoinHandle<()>>>,
 }
@@ -198,6 +252,7 @@ impl Default for StreamHub {
             }),
             app: Mutex::new(None),
             mode: Mutex::new(ModeState::default()),
+            config: Mutex::new(StreamConfig::default()),
             stop: Arc::new(AtomicBool::new(false)),
             task: Mutex::new(None),
         }
@@ -252,7 +307,7 @@ struct Incoming {
     image: Option<ChatImage>,
 }
 
-pub fn encode_jpeg(bgra: &[u8], w: usize, h: usize, stride: usize) -> Option<Vec<u8>> {
+pub fn encode_jpeg(bgra: &[u8], w: usize, h: usize, stride: usize, quality: u8) -> Option<Vec<u8>> {
     if w == 0 || h == 0 || bgra.len() < stride * h {
         return None;
     }
@@ -268,10 +323,6 @@ pub fn encode_jpeg(bgra: &[u8], w: usize, h: usize, stride: usize) -> Option<Vec
             out[o + 2] = row[i];
         }
     }
-    let quality = std::env::var("FEX_JPEG_QUALITY")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(90);
     let mut out = Vec::new();
     let enc = jpeg_encoder::Encoder::new(&mut out, quality);
     enc.encode(&rgb, w as u16, h as u16, jpeg_encoder::ColorType::Rgb)
@@ -287,13 +338,20 @@ pub fn encode_stream_frame(
     w: usize,
     h: usize,
     stride: usize,
+    config: &StreamConfig,
 ) -> Option<(u32, u32, Vec<u8>)> {
-    let max_dim = std::env::var("FEX_STREAM_MAX_W")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(1920);
+    let max_dim = if config.max_width >= 64 {
+        config.max_width
+    } else {
+        1920
+    };
+    let quality = if (1..=100).contains(&config.quality) {
+        config.quality
+    } else {
+        75
+    };
     if w <= max_dim || h == 0 {
-        let jpeg = encode_jpeg(bgra, w, h, stride)?;
+        let jpeg = encode_jpeg(bgra, w, h, stride, quality)?;
         return Some((w as u32, h as u32, jpeg));
     }
     let scale = (max_dim as f64) / (w.max(h) as f64);
@@ -312,7 +370,7 @@ pub fn encode_stream_frame(
             scaled[oi..oi + 4].copy_from_slice(&bgra[si..si + 4]);
         }
     }
-    let jpeg = encode_jpeg(&scaled, w2, h2, stride2)?;
+    let jpeg = encode_jpeg(&scaled, w2, h2, stride2, quality)?;
     Some((w2 as u32, h2 as u32, jpeg))
 }
 
@@ -378,7 +436,9 @@ impl Streaming {
         &self,
         app: AppHandle,
         port: Option<u16>,
+        config: StreamConfig,
     ) -> Result<StreamStatus, String> {
+        self.0.set_config(config);
         let port = port.unwrap_or_else(|| {
             std::env::var("FEX_PORT")
                 .ok()
@@ -420,7 +480,9 @@ impl Streaming {
         app: AppHandle,
         url: String,
         room: Option<String>,
+        config: StreamConfig,
     ) -> Result<StreamStatus, String> {
+        self.0.set_config(config);
         if self.0.mode.lock().unwrap().active {
             return Ok(self.0.status());
         }
@@ -442,6 +504,18 @@ impl Streaming {
 }
 
 impl StreamHub {
+    pub fn set_config(&self, config: StreamConfig) {
+        *self.config.lock().unwrap() = config.normalized();
+    }
+
+    pub fn config(&self) -> StreamConfig {
+        *self.config.lock().unwrap()
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.mode.lock().unwrap().active
+    }
+
     pub fn status(&self) -> StreamStatus {
         let (mode, addresses, relay, room, active) = {
             let m = self.mode.lock().unwrap();
@@ -768,7 +842,7 @@ mod tests {
                 buf[i + 3] = 255; // A
             }
         }
-        let jpeg = encode_jpeg(&buf, w, h, stride).expect("jpeg");
+        let jpeg = encode_jpeg(&buf, w, h, stride, 75).expect("jpeg");
         assert!(jpeg.len() > 100, "jpeg should be non-trivial");
         assert_eq!(&jpeg[..2], &[0xFF, 0xD8], "SOI marker");
         assert!(jpeg.ends_with(&[0xFF, 0xD9]), "EOI marker");
@@ -776,7 +850,7 @@ mod tests {
 
     #[test]
     fn jpeg_bad_dims() {
-        assert!(encode_jpeg(&[], 0, 10, 40).is_none());
+        assert!(encode_jpeg(&[], 0, 10, 40, 75).is_none());
     }
 
     #[test]
@@ -911,7 +985,7 @@ mod tests {
             }
         }
         let t0 = std::time::Instant::now();
-        let jpeg = encode_jpeg(&buf, w, h, stride).expect("jpeg 1080p");
+        let jpeg = encode_jpeg(&buf, w, h, stride, 75).expect("jpeg 1080p");
         let ms = t0.elapsed().as_millis();
         eprintln!("encode 1920x1080 -> {} bytes in {ms} ms", jpeg.len());
         let path = std::path::Path::new("/tmp/fex_diag.jpg");
@@ -936,26 +1010,30 @@ mod tests {
 
     #[test]
     fn stream_frame_scales_down() {
-        std::env::set_var("FEX_STREAM_MAX_W", "1280");
+        let config = StreamConfig {
+            fps: 24,
+            quality: 75,
+            max_width: 1280,
+        };
         let (w, h) = (1920usize, 1080usize);
         let stride = w * 4;
         let buf = vec![128u8; stride * h];
-        let r = encode_stream_frame(&buf, w, h, stride).expect("scaled jpeg");
+        let r = encode_stream_frame(&buf, w, h, stride, &config).expect("scaled jpeg");
         assert_eq!(
             r.0 as usize, 1280,
             "должно ужаться до 1280 по большей стороне"
         );
         assert!(r.1 > 0 && r.2.len() > 100);
         std::fs::write("/tmp/fex_scaled.jpg", &r.2).ok();
-        std::env::remove_var("FEX_STREAM_MAX_W");
     }
 
     #[test]
     fn stream_frame_no_scale_small() {
+        let config = StreamConfig::default();
         let (w, h) = (640usize, 360usize);
         let stride = w * 4;
         let buf = vec![64u8; stride * h];
-        let r = encode_stream_frame(&buf, w, h, stride).expect("jpeg");
+        let r = encode_stream_frame(&buf, w, h, stride, &config).expect("jpeg");
         assert_eq!(r.0 as usize, 640);
         assert_eq!(r.1 as usize, 360);
     }
@@ -1090,7 +1168,7 @@ mod tests {
                 bg[i + 3] = 255;
             }
         }
-        let jpeg = encode_jpeg(&bg, w, h, stride).expect("jpeg");
+        let jpeg = encode_jpeg(&bg, w, h, stride, 75).expect("jpeg");
         hub.push_video(3, w as u32, h as u32, jpeg);
 
         // viewer должен получить streams + бинарный кадр с настоящим jpeg

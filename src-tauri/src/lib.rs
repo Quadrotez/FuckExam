@@ -54,8 +54,16 @@ async fn stream_start(
     app: AppHandle,
     state: State<'_, streaming::Streaming>,
     port: Option<u16>,
+    fps: Option<u32>,
+    quality: Option<u8>,
+    max_width: Option<usize>,
 ) -> Result<streaming::StreamStatus, String> {
-    state.arm_local(app, port).await
+    let config = streaming::StreamConfig {
+        fps: fps.unwrap_or(0),
+        quality: quality.unwrap_or(0),
+        max_width: max_width.unwrap_or(0),
+    };
+    state.arm_local(app, port, config).await
 }
 #[tauri::command]
 async fn relay_connect(
@@ -63,8 +71,16 @@ async fn relay_connect(
     state: State<'_, streaming::Streaming>,
     url: String,
     room: Option<String>,
+    fps: Option<u32>,
+    quality: Option<u8>,
+    max_width: Option<usize>,
 ) -> Result<streaming::StreamStatus, String> {
-    state.arm_relay(app, url, room).await
+    let config = streaming::StreamConfig {
+        fps: fps.unwrap_or(0),
+        quality: quality.unwrap_or(0),
+        max_width: max_width.unwrap_or(0),
+    };
+    state.arm_relay(app, url, room, config).await
 }
 #[tauri::command]
 fn stream_status(state: State<'_, streaming::Streaming>) -> streaming::StreamStatus {
