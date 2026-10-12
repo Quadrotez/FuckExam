@@ -15,7 +15,7 @@ use serde::Serialize;
 use std::sync::Arc;
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
-const APP_ICON: tauri::image::Image<'static> = tauri::include_image!("./icons/32x32.png");
+const APP_ICON: tauri::image::Image<'static> = tauri::include_image!("./icons/icon.png");
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -110,6 +110,8 @@ async fn open_chat_window(app: AppHandle) -> Result<(), String> {
         .min_inner_size(320.0, 320.0)
         .resizable(true)
         .center()
+        .icon(APP_ICON.clone())
+        .map_err(|e| format!("set chat icon: {e}"))?
         .build()
         .map(|_| ())
         .map_err(|e| format!("open chat window: {e}"))
@@ -128,9 +130,13 @@ pub fn run() {
     let hub = Arc::new(streaming::StreamHub::default());
     tauri::Builder::default()
         .setup(|app| {
-            if let Some(window) = app.get_webview_window("main") {
-                window.set_icon(APP_ICON.clone())?;
-            }
+            WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+                .title("FuckExam")
+                .inner_size(880.0, 740.0)
+                .resizable(true)
+                .center()
+                .icon(APP_ICON.clone())?
+                .build()?;
             Ok(())
         })
         .manage(capture::Recorder {

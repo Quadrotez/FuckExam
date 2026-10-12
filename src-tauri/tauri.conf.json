@@ -9,15 +9,6 @@
   "app": {
     "withGlobalTauri": true,
     "enableGTKAppId": false,
-    "windows": [
-      {
-        "title": "FuckExam",
-        "width": 880,
-        "height": 740,
-        "resizable": true,
-        "center": true
-      }
-    ],
     "security": {
       "csp": null
     }
