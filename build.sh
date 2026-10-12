@@ -63,6 +63,32 @@ if [ "$DO_BINARY" -eq 1 ]; then
     (cd "$TAURI_DIR" && cargo build --release)
     cp "$BIN_SRC" "$DIST/fuck-exam"
     echo "    -> $DIST/fuck-exam ($(( $(stat -c%s "$DIST/fuck-exam") / 1024 )) КБ)"
+    # KDE/Wayland uses the desktop entry and WM_CLASS to associate a
+    # directly launched binary with its taskbar icon. Install a per-user
+    # launcher so ./dist/fuck-exam gets the same integration as a .deb.
+    if [ -n "${XDG_CURRENT_DESKTOP:-}${WAYLAND_DISPLAY:-}${DISPLAY:-}" ]; then
+        DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+        ICON_DIR="$DATA_HOME/icons/hicolor/512x512/apps"
+        APP_DIR="$DATA_HOME/applications"
+        mkdir -p "$ICON_DIR" "$APP_DIR"
+        cp "$PWD/src-tauri/icons/icon.png" "$ICON_DIR/fuck-exam.png"
+        DIST_ABS="$(realpath "$DIST")"
+        cat > "$APP_DIR/fuck-exam.desktop" <<EOF
+[Desktop Entry]
+Name=FuckExam
+Comment=Запись и трансляция окон
+Exec=$DIST_ABS/fuck-exam
+Icon=fuck-exam
+Terminal=false
+Type=Application
+Categories=Utility;
+StartupWMClass=fuck-exam
+X-GNOME-WMClass=fuck-exam
+EOF
+        command -v update-desktop-database >/dev/null 2>&1 && \
+            update-desktop-database "$APP_DIR" >/dev/null 2>&1 || true
+        echo "    -> desktop launcher: $APP_DIR/fuck-exam.desktop"
+    fi
 fi
 
 if [ "$DO_DEB" -eq 1 ] || [ "$DO_APPIMAGE" -eq 1 ]; then
