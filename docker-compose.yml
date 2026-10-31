@@ -13,6 +13,11 @@ services:
     network_mode: host
     environment:
       RELAY_PORT: "7444"
+      # Комнаты живут максимум сутки:
+      #   RELAY_ROOM_TTL_HOURS      — удалить комнату, если все ушли и прошло столько часов (24)
+      #   RELAY_ROOM_MAX_AGE_HOURS  — жёсткий предел жизни комнаты от создания (24)
+      RELAY_ROOM_TTL_HOURS: "24"
+      RELAY_ROOM_MAX_AGE_HOURS: "24"
       # Сервер за NAT/frp (исходящий IP не равен адресу подключения).
       # Задайте публичный адрес frp-сервера (и порт, если он отличается):
       # RELAY_HOST: "121.5.x.x"

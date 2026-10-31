@@ -1,6 +1,10 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use futures_util::{SinkExt, StreamExt};
@@ -15,6 +19,18 @@ const MAX_HISTORY_BYTES: usize = 2 * 1024 * 1024;
 const MAX_CHAT_TEXT_CHARS: usize = 4000;
 const MAX_CHAT_IMAGE_BYTES: usize = 512 * 1024;
 
+/// Сколько живёт комната, из которой ушли все участники.
+const DEFAULT_EMPTY_ROOM_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+/// Жёсткий предел жизни любой комнаты, даже с активными участниками.
+const DEFAULT_MAX_ROOM_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+
+const ROOM_CODE_LEN: usize = 6;
+/// Без похожих символов (0/O, 1/I), чтобы код можно было продиктовать голосом.
+const ROOM_ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const MAX_ROOMS: usize = 1024;
+const SWEEP_INTERVAL: Duration = Duration::from_secs(60);
+const PING_ROOM: &str = "__ping__";
+
 pub const DEFAULT_PORT: u16 = 7444;
 
 #[derive(Clone, Deserialize)]
@@ -22,7 +38,8 @@ struct Hello {
     #[serde(rename = "type")]
     _kind: String,
     role: String,
-    room: String,
+    #[serde(default)]
+    room: Option<String>,
 }
 
 #[derive(Clone, Deserialize, serde::Serialize)]
@@ -130,7 +147,14 @@ fn trim_chat_history(history: &mut Vec<ChatMsg>) {
     }
 }
 
+/// Код комнаты не чувствителен к регистру и лишним пробелам.
+fn normalize_room(code: &str) -> String {
+    code.trim().to_ascii_uppercase()
+}
+
 struct Room {
+    created: Instant,
+    empty_since: Option<Instant>,
     recorder: Option<mpsc::Sender<Message>>,
     viewers: Vec<mpsc::Sender<Message>>,
     streams: Vec<StreamEntry>,
@@ -140,11 +164,21 @@ struct Room {
 impl Room {
     fn new() -> Self {
         Self {
+            created: Instant::now(),
+            empty_since: None,
             recorder: None,
             viewers: Vec::new(),
             streams: Vec::new(),
             history: Vec::new(),
         }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.recorder.is_none() && self.viewers.is_empty()
+    }
+
+    fn touch(&mut self) {
+        self.empty_since = None;
     }
 
     fn broadcast_viewers(&self, msg: &Message) {
@@ -189,29 +223,146 @@ fn broadcast_chat(room: &Arc<Mutex<Room>>, value: serde_json::Value, include_rec
 
 pub struct Relay {
     rooms: Mutex<HashMap<String, Arc<Mutex<Room>>>>,
+    counter: AtomicU64,
+    empty_ttl: Duration,
+    max_age: Duration,
+}
+
+impl Default for Relay {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Relay {
     pub fn new() -> Self {
+        Self::with_ttls(DEFAULT_EMPTY_ROOM_TTL, DEFAULT_MAX_ROOM_AGE)
+    }
+
+    /// Отдельные TTL нужны тестам и, при желании, окружению.
+    pub fn with_ttls(empty_ttl: Duration, max_age: Duration) -> Self {
         Self {
             rooms: Mutex::new(HashMap::new()),
+            counter: AtomicU64::new(0),
+            empty_ttl,
+            max_age,
         }
     }
 
-    fn get_room(&self, name: &str) -> Arc<Mutex<Room>> {
+    pub fn room_count(&self) -> usize {
+        self.rooms.lock().unwrap().len()
+    }
+
+    fn make_code(&self) -> String {
+        let ticks = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or_default();
+        let mut x = ticks
+            ^ (u64::from(std::process::id())).rotate_left(32)
+            ^ self.counter.fetch_add(1, Ordering::Relaxed).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        let mut code = String::with_capacity(ROOM_CODE_LEN);
+        for _ in 0..ROOM_CODE_LEN {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            code.push(ROOM_ALPHABET[(x % ROOM_ALPHABET.len() as u64) as usize] as char);
+        }
+        code
+    }
+
+    /// Комнату создаёт только сервер. Клиент не может придумать код.
+    fn create_room(&self) -> Result<String, String> {
+        if self.room_count() >= MAX_ROOMS {
+            self.prune_expired();
+            if self.room_count() >= MAX_ROOMS {
+                return Err("слишком много активных комнат, попробуйте позже".into());
+            }
+        }
         let mut rooms = self.rooms.lock().unwrap();
-        rooms
-            .entry(name.to_string())
-            .or_insert_with(|| Arc::new(Mutex::new(Room::new())))
-            .clone()
+        for _ in 0..64 {
+            let code = self.make_code();
+            if !rooms.contains_key(&code) {
+                rooms.insert(code.clone(), Arc::new(Mutex::new(Room::new())));
+                return Ok(code);
+            }
+        }
+        Err("не удалось сгенерировать код комнаты".into())
+    }
+
+    fn join_room(&self, code: &str) -> Option<Arc<Mutex<Room>>> {
+        self.rooms.lock().unwrap().get(code).cloned()
+    }
+
+    /// Убирает просроченные комнаты: пустые — по TTL простоя, любые — по жёсткому пределу.
+    pub fn prune_expired(&self) {
+        let now = Instant::now();
+        let mut rooms = self.rooms.lock().unwrap();
+
+        let hard: Vec<(String, Arc<Mutex<Room>>)> = rooms
+            .iter()
+            .filter(|(_, room)| {
+                now.saturating_duration_since(room.lock().unwrap().created) >= self.max_age
+            })
+            .map(|(code, room)| (code.clone(), room.clone()))
+            .collect();
+
+        for (code, room) in &hard {
+            {
+                let mut r = room.lock().unwrap();
+                r.broadcast_to(
+                    &Message::Text(
+                        json!({"type":"error","error":"комната истекла — создайте новую"})
+                            .to_string()
+                            .into(),
+                    ),
+                    true,
+                    true,
+                );
+                r.viewers.clear();
+                r.recorder = None;
+                r.streams.clear();
+            }
+            println!("room '{code}' expired: max age reached");
+        }
+
+        rooms.retain(|code, room| {
+            if now.saturating_duration_since(room.lock().unwrap().created) >= self.max_age {
+                return false;
+            }
+            let r = room.lock().unwrap();
+            let idle = r
+                .empty_since
+                .is_some_and(|since| now.saturating_duration_since(since) >= self.empty_ttl);
+            let keep = !(r.is_empty() && idle);
+            if !keep {
+                println!("room '{code}' expired: empty for too long");
+            }
+            keep
+        });
     }
 }
 
 pub async fn serve(addr: &str) -> Result<(), String> {
+    serve_with(addr, Arc::new(Relay::new())).await
+}
+
+pub async fn serve_with(addr: &str, relay: Arc<Relay>) -> Result<(), String> {
     let listener = TcpListener::bind(addr)
         .await
         .map_err(|e| format!("bind {addr}: {e}"))?;
-    let relay = Arc::new(Relay::new());
+
+    {
+        let relay = relay.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(SWEEP_INTERVAL);
+            loop {
+                ticker.tick().await;
+                relay.prune_expired();
+            }
+        });
+    }
+
     loop {
         let (stream, _peer) = listener.accept().await.map_err(|e| e.to_string())?;
         let relay = relay.clone();
@@ -219,6 +370,24 @@ pub async fn serve(addr: &str) -> Result<(), String> {
             let _ = handle_conn(relay, stream).await;
         });
     }
+}
+
+async fn reject(
+    sink: &mut futures_util::stream::SplitSink<
+        tokio_tungstenite::WebSocketStream<TcpStream>,
+        Message,
+    >,
+    error: &str,
+) -> Result<(), String> {
+    let _ = sink
+        .send(Message::Text(
+            json!({ "type": "error", "error": error })
+                .to_string()
+                .into(),
+        ))
+        .await;
+    let _ = sink.send(Message::Close(None)).await;
+    Ok(())
 }
 
 pub async fn handle_conn(relay: Arc<Relay>, stream: TcpStream) -> Result<(), String> {
@@ -233,45 +402,70 @@ pub async fn handle_conn(relay: Arc<Relay>, stream: TcpStream) -> Result<(), Str
         _ => return Err("no hello".into()),
     };
 
-    if hello.room.is_empty() {
-        let _ = sink
-            .send(Message::Text(
-                json!({"type":"error","error":"room required"})
-                    .to_string()
-                    .into(),
-            ))
-            .await;
-        return Err("no room".into());
-    }
-
     let role = hello.role.as_str();
     let is_recorder = role == "recorder";
     if !is_recorder && role != "viewer" {
+        return reject(&mut sink, "неизвестная роль").await;
+    }
+
+    // Пинг доступности relay: отвечаем welcome и закрываем, комнату не создаём.
+    let is_ping = hello
+        .room
+        .as_deref()
+        .map(|room| room.trim().eq_ignore_ascii_case(PING_ROOM))
+        .unwrap_or(false);
+    if !is_recorder && is_ping {
         let _ = sink
             .send(Message::Text(
-                json!({"type":"error","error":"unknown role"})
+                json!({ "type": "welcome", "streams": [], "history": [] })
                     .to_string()
                     .into(),
             ))
             .await;
-        return Err("bad role".into());
+        return Ok(());
     }
 
-    let room = relay.get_room(&hello.room);
-
-    if is_recorder {
+    let (code, room) = if is_recorder {
+        let code = match relay.create_room() {
+            Ok(code) => code,
+            Err(e) => return reject(&mut sink, &e).await,
+        };
+        let room = relay.join_room(&code).expect("freshly created room");
         {
             let mut r = room.lock().unwrap();
             r.recorder = Some(tx.clone());
+            r.touch();
         }
-        println!("recorder joined room '{}'", hello.room);
-    } else {
+        if sink
+            .send(Message::Text(
+                json!({ "type": "room", "room": code }).to_string().into(),
+            ))
+            .await
+            .is_err()
         {
             let mut r = room.lock().unwrap();
-            r.viewers.push(tx.clone());
+            r.recorder = None;
+            r.empty_since = Some(Instant::now());
+            return Ok(());
         }
+        println!("recorder created room '{code}'");
+        (code, room)
+    } else {
+        let requested = hello
+            .room
+            .as_deref()
+            .map(normalize_room)
+            .filter(|r| !r.is_empty());
+        let Some(requested) = requested else {
+            return reject(&mut sink, "комната не указана").await;
+        };
+        let Some(room) = relay.join_room(&requested) else {
+            return reject(&mut sink, "комната не найдена").await;
+        };
         let (streams, history) = {
-            let r = room.lock().unwrap();
+            let mut r = room.lock().unwrap();
+            r.viewers.push(tx.clone());
+            r.touch();
             let streams = r
                 .streams
                 .iter()
@@ -291,19 +485,24 @@ pub async fn handle_conn(relay: Arc<Relay>, stream: TcpStream) -> Result<(), Str
                 .collect::<Vec<_>>();
             (streams, history)
         };
+
         if sink
             .send(Message::Text(
-                json!({ "type": "welcome", "streams": streams, "history": history })
+                json!({ "type": "welcome", "room": requested, "streams": streams, "history": history })
                     .to_string()
                     .into(),
             ))
             .await
             .is_err()
         {
+            let mut r = room.lock().unwrap();
+            r.viewers.retain(|v| !v.same_channel(&tx));
+            r.empty_since = if r.is_empty() { Some(Instant::now()) } else { None };
             return Ok(());
         }
-        println!("viewer joined room '{}'", hello.room);
-    }
+        println!("viewer joined room '{requested}'");
+        (requested, room)
+    };
 
     loop {
         tokio::select! {
@@ -378,14 +577,20 @@ pub async fn handle_conn(relay: Arc<Relay>, stream: TcpStream) -> Result<(), Str
             if let Some(rtx) = &r.recorder {
                 if rtx.same_channel(&tx) {
                     r.recorder = None;
+                    r.streams.clear();
+                    r.broadcast_to(
+                        &Message::Text(json!({ "type": "streams", "streams": [] }).to_string().into()),
+                        false,
+                        true,
+                    );
                 }
             }
         }
+        r.empty_since = if r.is_empty() { Some(Instant::now()) } else { None };
     }
     println!(
-        "{} left room '{}'",
-        if is_recorder { "recorder" } else { "viewer" },
-        hello.room
+        "{} left room '{code}'",
+        if is_recorder { "recorder" } else { "viewer" }
     );
     Ok(())
 }

@@ -137,6 +137,13 @@ fn local_ips() -> Vec<String> {
     ips
 }
 
+fn env_hours(name: &str, default_hours: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(default_hours)
+}
+
 #[tokio::main]
 async fn main() {
     let listen_port = std::env::var("RELAY_PORT")
@@ -148,6 +155,14 @@ async fn main() {
         .and_then(|v| v.parse::<u16>().ok())
         .unwrap_or(listen_port);
     let addr = format!("0.0.0.0:{listen_port}");
+
+    let empty_ttl = std::time::Duration::from_secs(env_hours("RELAY_ROOM_TTL_HOURS", 24) * 3600);
+    let max_age = std::time::Duration::from_secs(env_hours("RELAY_ROOM_MAX_AGE_HOURS", 24) * 3600);
+    println!(
+        "rooms: пустые удаляются через {} ч, любая — не позже {} ч",
+        empty_ttl.as_secs() / 3600,
+        max_age.as_secs() / 3600
+    );
 
     let host_override = std::env::var("RELAY_HOST").ok();
 
@@ -191,7 +206,8 @@ async fn main() {
         }
     }
 
-    if let Err(e) = fuck_exam_relay::serve(&addr).await {
+    let relay = std::sync::Arc::new(fuck_exam_relay::Relay::with_ttls(empty_ttl, max_age));
+    if let Err(e) = fuck_exam_relay::serve_with(&addr, relay).await {
         eprintln!("relay error: {e}");
         std::process::exit(1);
     }
