@@ -262,10 +262,73 @@ jobs:
           name: fuck-exam-windows-${{ matrix.arch }}
           path: release-artifacts/
 
+  # Android: APK зрителя (трансляция + чат). Запись экрана на телефоне не входит.
+  build-android:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: >-
+            platforms;android-37
+            build-tools;36.0.0
+            ndk;27.2.12479018
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+          key: android
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Tauri CLI
+        run: npm install -g @tauri-apps/cli@^2
+
+      - name: Build APK
+        run: |
+          export NDK_HOME="$ANDROID_SDK_ROOT/ndk/27.2.12479018"
+          cd src-tauri
+          tauri android build --apk --ci
+
+      - name: Stage Android artifacts
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="$(sed -n 's/^version = "\([^\"]*\)"/\1/p' src-tauri/Cargo.toml | head -1)"
+          fi
+          mkdir -p release-artifacts
+          APK="$(find src-tauri/gen/android/app/build/outputs/apk -name '*.apk' | head -1)"
+          test -n "$APK"
+          cp "$APK" "release-artifacts/fuck-exam-android-${VERSION}.apk"
+
+      - name: Upload Android artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuck-exam-android
+          path: release-artifacts/
+
   # Release is created only after every architecture/platform job succeeds.
   publish-release:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [build-linux, build-relay, build-windows, docker-image]
+    needs: [build-linux, build-relay, build-windows, build-android, docker-image]
     runs-on: ubuntu-24.04
     steps:
       - name: Download all build artifacts

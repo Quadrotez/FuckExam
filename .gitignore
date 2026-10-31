@@ -2,5 +2,5 @@ temp/
 dist/
 src-tauri/target/
 relay/target/
-src-tauri/gen/
+src-tauri/gen/schemas/
 node_modules/

@@ -736,3 +736,24 @@ html[data-chat-window="true"] #view-recorder .chat-log {
     padding: 2px 8px; border-radius: 8px;
     backdrop-filter: blur(4px);
 }
+
+/* ---------------- Android / мобильный режим ---------------- */
+
+html[data-mobile="true"] #view-viewer [data-back] { display: none; }
+html[data-mobile="true"] .container-wide { padding: 14px 12px 28px; gap: 14px; }
+html[data-mobile="true"] .v-form { flex-direction: column; max-width: none; }
+html[data-mobile="true"] .v-form input,
+html[data-mobile="true"] .v-form button { width: 100%; font-size: 15px; padding: 12px 14px; }
+html[data-mobile="true"] .v-grid { grid-template-columns: minmax(0, 1fr); }
+html[data-mobile="true"] .v-cell { max-height: 46vh; }
+html[data-mobile="true"] .chat-rw { max-width: none; }
+html[data-mobile="true"] .chat-log { height: clamp(180px, 34vh, 320px); }
+html[data-mobile="true"] .chat-form textarea { font-size: 16px; }
+html[data-mobile="true"] .hint { display: none; }
+
+@supports (padding: env(safe-area-inset-bottom)) {
+    html[data-mobile="true"] .container-wide {
+        padding-bottom: calc(28px + env(safe-area-inset-bottom));
+    }
+}
+

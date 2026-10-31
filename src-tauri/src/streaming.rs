@@ -387,14 +387,6 @@ pub fn local_addresses() -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-fn gen_room() -> String {
-    let ticks = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or_default();
-    format!("{:08x}", ticks ^ std::process::id() as u64)
-}
-
 /// Проверка доступности relay: подключаемся как зритель в тестовую комнату
 /// и ждём welcome. Позволяет узнать «ворк/не ворк» до запуска трансляции.
 pub async fn ping_relay(url: String) -> Result<String, String> {
@@ -479,25 +471,23 @@ impl Streaming {
         &self,
         app: AppHandle,
         url: String,
-        room: Option<String>,
         config: StreamConfig,
     ) -> Result<StreamStatus, String> {
         self.0.set_config(config);
         if self.0.mode.lock().unwrap().active {
             return Ok(self.0.status());
         }
-        let room = room.unwrap_or_else(gen_room);
         *self.0.app.lock().unwrap() = Some(app);
         *self.0.mode.lock().unwrap() = ModeState {
             active: true,
             mode: "relay".into(),
             addresses: Vec::new(),
             relay: Some(url.clone()),
-            room: Some(room.clone()),
+            room: None,
         };
         self.0.stop.store(false, Ordering::Relaxed);
         let hub = self.0.clone();
-        let task = tokio::spawn(relay_client(hub, url, room));
+        let task = tokio::spawn(relay_client(hub, url));
         *self.0.task.lock().unwrap() = Some(task);
         Ok(self.0.status())
     }
@@ -657,6 +647,29 @@ impl StreamHub {
         self.inner.lock().unwrap().history.clone()
     }
 
+    pub fn set_room(&self, room: String) {
+        let changed = {
+            let mut mode = self.mode.lock().unwrap();
+            if mode.room.as_deref() == Some(room.as_str()) {
+                false
+            } else {
+                mode.room = Some(room.clone());
+                true
+            }
+        };
+        if changed {
+            if let Some(app) = self.app.lock().unwrap().clone() {
+                let _ = app.emit("stream-room", &room);
+            }
+        }
+    }
+
+    pub fn emit_error(&self, message: String) {
+        if let Some(app) = self.app.lock().unwrap().clone() {
+            let _ = app.emit("stream-error", &message);
+        }
+    }
+
     pub fn emit_chat(&self, msg: ChatMsg) {
         {
             let mut i = self.inner.lock().unwrap();
@@ -771,20 +784,19 @@ async fn run_viewer(
     Ok(())
 }
 
-async fn relay_client(hub: Arc<StreamHub>, url: String, room: String) {
+async fn relay_client(hub: Arc<StreamHub>, url: String) {
     let (conn, _resp) = match tokio_tungstenite::connect_async(&url).await {
         Ok(x) => x,
         Err(e) => {
-            if let Some(app) = hub.app.lock().unwrap().clone() {
-                let _ = app.emit("stream-error", format!("relay: {e}"));
-            }
+            hub.emit_error(format!("relay: {e}"));
             hub.deactivate();
             return;
         }
     };
     let (mut sink, mut rstream) = conn.split();
 
-    let hello = json!({"type":"hello","role":"recorder","room":room}).to_string();
+    // Комнату придумывает сервер: клиент её не передаёт.
+    let hello = json!({"type":"hello","role":"recorder"}).to_string();
     if sink.send(Message::Text(hello.into())).await.is_err() {
         hub.deactivate();
         return;
@@ -804,12 +816,31 @@ async fn relay_client(hub: Arc<StreamHub>, url: String, room: String) {
             },
             msg = rstream.next() => match msg {
                 Some(Ok(Message::Text(t))) => {
-                    if let Ok(incoming) = serde_json::from_str::<Incoming>(&t) {
-                        if incoming.kind == "chat" {
-                            if let Some(msg) = chat_message(incoming.from, incoming.text, incoming.markdown, incoming.image) {
-                                hub.emit_chat(msg);
+                    let Ok(value) = serde_json::from_str::<serde_json::Value>(&t) else {
+                        continue;
+                    };
+                    match value.get("type").and_then(|x| x.as_str()) {
+                        Some("room") => {
+                            if let Some(room) = value.get("room").and_then(|x| x.as_str()) {
+                                hub.set_room(room.to_string());
                             }
                         }
+                        Some("error") => {
+                            let error = value
+                                .get("error")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("relay отклонил подключение");
+                            hub.emit_error(error.to_string());
+                            break;
+                        }
+                        Some("chat") => {
+                            if let Ok(incoming) = serde_json::from_value::<Incoming>(value) {
+                                if let Some(msg) = chat_message(incoming.from, incoming.text, incoming.markdown, incoming.image) {
+                                    hub.emit_chat(msg);
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
                 Some(Ok(Message::Close(_))) => break,
@@ -854,10 +885,11 @@ mod tests {
     }
 
     #[test]
-    fn room_is_hex() {
-        let r = gen_room();
-        assert!((8..=16).contains(&r.len()));
-        assert!(r.chars().all(|c| c.is_ascii_hexdigit()));
+    fn room_status_is_filled_from_server() {
+        let hub = StreamHub::default();
+        assert!(hub.status().room.is_none());
+        hub.set_room("ABC123".into());
+        assert_eq!(hub.status().room.as_deref(), Some("ABC123"));
     }
 
     #[test]
@@ -1272,7 +1304,12 @@ mod tests {
                     _ => continue,
                 }
             }
-            // инжектим чат в сторону записывающего
+            // сервер выдаёт комнату и инжектит чат в сторону записывающего
+            let _ = sink
+                .send(Message::Text(
+                    json!({"type":"room","room":"ROOM42"}).to_string().into(),
+                ))
+                .await;
             let _ = sink
                 .send(Message::Text(
                     json!({"type":"chat","from":"Prof","text":"oi"})
@@ -1291,9 +1328,12 @@ mod tests {
         // зритель на том же хабе, чтобы наблюдать чат
         let (_vid, mut vrx) = hub.register(false);
 
-        let task = tokio::spawn(relay_client(hub.clone(), url, String::from("room42")));
+        let task = tokio::spawn(relay_client(hub.clone(), url));
 
         hello_rx.await.expect("recorder hello");
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(hub.status().room.as_deref(), Some("ROOM42"));
 
         hub.push_video(9, 320, 240, vec![0xAB; 128]);
 

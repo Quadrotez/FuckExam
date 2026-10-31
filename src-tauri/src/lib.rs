@@ -4,6 +4,11 @@ pub mod capture;
 #[cfg(target_os = "windows")]
 #[path = "capture_windows.rs"]
 pub mod capture;
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+#[path = "capture_mobile.rs"]
+pub mod capture;
+
+pub mod diag;
 
 #[cfg(target_os = "linux")]
 #[path = "window_capture_linux.rs"]
@@ -13,8 +18,12 @@ pub mod streaming;
 
 use serde::Serialize;
 use std::sync::Arc;
-use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, State};
 
+#[cfg(desktop)]
+use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+
+#[cfg(desktop)]
 const APP_ICON: tauri::image::Image<'static> = tauri::include_image!("./icons/icon.png");
 
 #[derive(Serialize)]
@@ -70,7 +79,6 @@ async fn relay_connect(
     app: AppHandle,
     state: State<'_, streaming::Streaming>,
     url: String,
-    room: Option<String>,
     fps: Option<u32>,
     quality: Option<u8>,
     max_width: Option<usize>,
@@ -80,7 +88,7 @@ async fn relay_connect(
         quality: quality.unwrap_or(0),
         max_width: max_width.unwrap_or(0),
     };
-    state.arm_relay(app, url, room, config).await
+    state.arm_relay(app, url, config).await
 }
 #[tauri::command]
 fn stream_status(state: State<'_, streaming::Streaming>) -> streaming::StreamStatus {
@@ -110,6 +118,7 @@ fn chat_history(state: State<'_, streaming::Streaming>) -> Vec<streaming::ChatMs
     state.0.chat_history()
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 async fn open_chat_window(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("chat") {
@@ -133,8 +142,18 @@ async fn open_chat_window(app: AppHandle) -> Result<(), String> {
         .map_err(|e| format!("open chat window: {e}"))
 }
 
+/// На Android отдельное окно открыть нельзя — там чат живёт на том же экране.
+#[cfg(not(desktop))]
+#[tauri::command]
+async fn open_chat_window() -> Result<(), String> {
+    Err("отдельное окно чата недоступно на этой платформе".into())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    diag::install_panic_hook();
+    diag::log_environment();
+
     #[cfg(target_os = "linux")]
     if std::env::var_os("DISPLAY").is_some() {
         // KDE/Wayland normally provides XWayland. Using it here gives the
@@ -144,15 +163,20 @@ pub fn run() {
     }
 
     let hub = Arc::new(streaming::StreamHub::default());
-    tauri::Builder::default()
+    let result = tauri::Builder::default()
         .setup(|app| {
-            WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-                .title("FuckExam")
-                .inner_size(880.0, 740.0)
-                .resizable(true)
-                .center()
-                .icon(APP_ICON.clone())?
-                .build()?;
+            #[cfg(desktop)]
+            {
+                // Окно создаётся из tauri.conf.json (так же, как на Android).
+                // Иконку ставим здесь: на Linux без неё окно в панели задач безымянное.
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.set_icon(APP_ICON.clone());
+                }
+            }
+            #[cfg(not(desktop))]
+            {
+                let _ = app;
+            }
             Ok(())
         })
         .manage(capture::Recorder {
@@ -174,6 +198,19 @@ pub fn run() {
             chat_history,
             open_chat_window
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .run(tauri::generate_context!());
+
+    match result {
+        Ok(()) => diag::log("exit: clean"),
+        Err(e) => {
+            #[cfg(not(target_os = "android"))]
+            let text = format!(
+                "не удалось запустить приложение: {e}\nЛог: {}",
+                diag::log_path().display()
+            );
+            #[cfg(target_os = "android")]
+            let text = format!("не удалось запустить приложение: {e}");
+            diag::report_fatal(&text);
+        }
+    }
 }

@@ -10,13 +10,23 @@ async function checkPlatformAtStartup() {
         runtimePlatform = await invoke('platform_info');
         document.documentElement.dataset.os = runtimePlatform.os;
         if (!runtimePlatform.recorder) {
-            $('btn').disabled = true;
-            $('path-hint').textContent = `Запись экранов не поддерживается на ОС: ${runtimePlatform.os}`;
+            applyMobileUi();
         }
         console.info('[fuckexam] platform:', runtimePlatform);
     } catch (e) {
         console.error('[fuckexam] platform check failed:', e);
     }
+}
+
+/** Android: умеет только смотреть и писать в чат, поэтому сразу открываем зрителя. */
+function applyMobileUi() {
+    document.documentElement.dataset.mobile = 'true';
+    document.querySelector('.role-card[data-role="recorder"]')?.remove();
+    const hint = document.querySelector('#view-landing .hint');
+    if (hint) hint.textContent = 'просмотр трансляции и чат';
+    const subtitle = document.querySelector('#view-landing .subtitle');
+    if (subtitle) subtitle.textContent = 'Трансляция · Чат';
+    if (!isChatWindow) showView('viewer');
 }
 
 /* ---------------- view router ---------------- */
@@ -183,7 +193,6 @@ btn.addEventListener('click', handleClick);
 const sModeWrap = $('seg-mode');
 const sPort = $('s-port');
 const sRelayUrl = $('s-relay-url');
-const sRoom = $('s-room');
 const sFps = $('s-fps');
 const sQuality = $('s-quality');
 const sMaxw = $('s-maxw');
@@ -203,7 +212,6 @@ function loadSettings() {
         const s = JSON.parse(raw);
         if (s.port) sPort.value = s.port;
         if (s.relayUrl) sRelayUrl.value = s.relayUrl;
-        if (s.relayRoom) sRoom.value = s.relayRoom;
         if (s.fps) sFps.value = s.fps;
         if (s.quality) sQuality.value = s.quality;
         if (s.maxWidth) sMaxw.value = s.maxWidth;
@@ -220,7 +228,6 @@ function saveSettings() {
             JSON.stringify({
                 port: sPort.value,
                 relayUrl: sRelayUrl.value,
-                relayRoom: sRoom.value,
                 fps: sFps.value,
                 quality: sQuality.value,
                 maxWidth: sMaxw.value,
@@ -295,6 +302,9 @@ function renderSStatus(st) {
             html +=
                 `<div class="s-addr"><code>${escapeHtml(st.relay || '')}</code>` +
                 `<button class="btn-mini" data-copy="${escapeHtml(st.relay || '')}">Скопировать</button></div>`;
+            if (!st.room) {
+                html += '<div class="s-sec">Комната создаётся на сервере…</div>';
+            }
             if (st.room) {
                 html +=
                     `<div class="s-addr s-room"><code>${escapeHtml(st.room)}</code>` +
@@ -398,7 +408,6 @@ async function streamStart() {
                   })
                 : await invoke('relay_connect', {
                       url: relayUrl,
-                      room: sRoom.value.trim() || null,
                       ...perf,
                   });
         saveSettings();
@@ -450,6 +459,13 @@ sRelayCheck.addEventListener('click', async () => {
 });
 
 setSeg('local');
+
+listen('stream-room', () => {
+    invoke('stream_status').then(renderSStatus).catch(() => {});
+});
+listen('stream-error', (evt) => {
+    setStatus('трансляция: ' + String(evt.payload ?? 'ошибка relay'), false);
+});
 
 const recChatLog = $('chat-log');
 const recChatForm = $('rec-chat-form');
@@ -589,6 +605,7 @@ const vChatFeedback = $('v-chat-feedback');
 let vsock = null;
 let vFrames = 0;
 let vConnAborted = false;
+let vServerError = '';
 let pendingChatImage = null;
 const vstreams = new Map(); // node -> { img, stale }
 
@@ -827,7 +844,8 @@ function vHandleMsg(evt) {
                 if (msg.from) appendChatMessage(vChatLog, msg);
                 break;
             case 'error':
-                vSetStatus('ошибка: ' + msg.error);
+                vServerError = String(msg.error || 'ошибка сервера');
+                vSetStatus('ошибка: ' + vServerError);
                 break;
         }
         return;
@@ -860,6 +878,7 @@ function doConnect() {
         return;
     }
     vConnAborted = false;
+    vServerError = '';
     vsock = ws;
     ws.binaryType = 'arraybuffer';
     vSetStatus('подключение…');
@@ -884,7 +903,7 @@ function doConnect() {
             JSON.stringify({
                 type: 'hello',
                 role: 'viewer',
-                room: vRoom.value.trim() || '',
+                room: (vRoom.value.trim() || '').toUpperCase(),
             })
         );
     });
@@ -892,7 +911,7 @@ function doConnect() {
     ws.addEventListener('close', () => {
         clearTimeout(connTimer);
         if (!vConnAborted) {
-            vSetStatus('отключено');
+            vSetStatus(vServerError ? 'ошибка: ' + vServerError : 'отключено');
         }
         vResetConn();
     });

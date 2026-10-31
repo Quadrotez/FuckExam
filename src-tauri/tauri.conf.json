@@ -9,6 +9,17 @@
   "app": {
     "withGlobalTauri": true,
     "enableGTKAppId": false,
+    "windows": [
+      {
+        "label": "main",
+        "title": "FuckExam",
+        "width": 880,
+        "height": 740,
+        "resizable": true,
+        "center": true,
+        "useHttpsScheme": false
+      }
+    ],
     "security": {
       "csp": null
     }
@@ -17,7 +28,7 @@
     "active": true,
     "targets": ["deb", "appimage", "nsis"],
     "windows": {
-      "webviewInstallMode": { "type": "downloadBootstrapper" }
+      "webviewInstallMode": { "type": "offlineInstaller" }
     },
     "linux": {
       "deb": {
