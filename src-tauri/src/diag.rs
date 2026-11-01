@@ -83,7 +83,19 @@ pub fn log(message: &str) {
 }
 
 #[cfg(target_os = "android")]
-pub fn log(_message: &str) {}
+/// На Android «stderr» не существует: всё, что не попало в logcat, потеряно.
+#[cfg(target_os = "android")]
+pub fn log(message: &str) {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        android_logger::init_once(
+            android_logger::Config::default()
+                .with_max_level(log::LevelFilter::Info)
+                .with_tag("fuckexam"),
+        );
+    });
+    log::info!("[fuckexam] {message}");
+}
 
 /// Пишет панику в лог и, на Windows, показывает окно.
 pub fn install_panic_hook() {
