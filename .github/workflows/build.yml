@@ -298,6 +298,24 @@ jobs:
           rm -f "$HOME/.cargo/bin/cargo-tauri"
           cargo install tauri-cli --locked --force
 
+      - name: Decode Android keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEYSTORE_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          if [[ -z "$KEYSTORE_BASE64" ]]; then
+            echo "No keystore secret set — release APK will be unsigned"
+            exit 0
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > "$HOME/fuckexam.keystore"
+          {
+            echo "storeFile=$HOME/fuckexam.keystore"
+            echo "storePassword=$KEYSTORE_PASSWORD"
+            echo "keyAlias=$KEYSTORE_ALIAS"
+            echo "keyPassword=$KEYSTORE_PASSWORD"
+          } > src-tauri/gen/android/keystore.properties
+
       - name: Build APK
         run: |
           export NDK_HOME="$ANDROID_SDK_ROOT/ndk/27.2.12479018"
@@ -312,7 +330,7 @@ jobs:
             VERSION="$(sed -n 's/^version = "\([^\"]*\)"/\1/p' src-tauri/Cargo.toml | head -1)"
           fi
           mkdir -p release-artifacts
-          APK="$(find src-tauri/gen/android/app/build/outputs/apk -name '*.apk' | head -1)"
+          APK="$(find src-tauri/gen/android/app/build/outputs/apk/universal -name '*.apk' | head -1)"
           test -n "$APK"
           cp "$APK" "release-artifacts/fuck-exam-android-${VERSION}.apk"
 
