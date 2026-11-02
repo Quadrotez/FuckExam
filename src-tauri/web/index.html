@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>FuckExam · трансляция</title>
+    <link rel="stylesheet" href="/style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>🎥</text></svg>">
+</head>
+<body>
+<div class="wrap">
+    <header class="top">
+        <div class="logo"><span class="mark">◈</span> F<span class="accent">u</span>ckExam <span class="muted">веб</span></div>
+        <a class="muted small" href="/admin" id="admin-link" hidden>управление →</a>
+    </header>
+
+    <div class="bar"><span class="dot"></span><span id="status">подключение…</span></div>
+
+    <main id="grid" class="grid"></main>
+    <p class="hint muted small">клик по превью — на весь экран, Esc — выход</p>
+
+    <section class="panel chat">
+        <h2>Чат</h2>
+        <div id="chat-log" class="chat-log"></div>
+        <form id="chat-form" class="chat-form">
+            <input id="name" placeholder="ваше имя" maxlength="80" autocomplete="off">
+            <textarea id="chat-input" rows="2" maxlength="4000" placeholder="Сообщение…" autocomplete="off"></textarea>
+            <button type="submit">➤</button>
+        </form>
+        <div class="tools">
+            <label><input id="markdown" type="checkbox"> Markdown</label>
+            <span class="muted small">Enter — отправить · Ctrl+Enter — новая строка</span>
+        </div>
+        <div id="chat-feedback" class="feedback" aria-live="polite"></div>
+    </section>
+</div>
+<script src="/vendor/purify.min.js"></script>
+<script src="/vendor/marked.umd.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

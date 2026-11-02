@@ -1,6 +1,6 @@
 [package]
 name = "fuck-exam"
-version = "0.2.8"
+version = "0.3.0"
 description = "FuckExam — запись выбранных окон в видео"
 edition = "2021"
 default-run = "fuck-exam"
@@ -13,7 +13,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"

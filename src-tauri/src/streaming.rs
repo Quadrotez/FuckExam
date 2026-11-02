@@ -11,14 +11,13 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tauri::{AppHandle, Emitter};
-use tokio::{net::TcpListener, sync::mpsc, task::JoinHandle};
+use tokio::{sync::mpsc, task::JoinHandle};
 use tokio_tungstenite::tungstenite::Message;
 
 const MAX_HISTORY: usize = 100;
 const MAX_HISTORY_BYTES: usize = 2 * 1024 * 1024;
 const MAX_CHAT_TEXT_CHARS: usize = 4000;
 const MAX_CHAT_IMAGE_BYTES: usize = 512 * 1024;
-const DEFAULT_PORT: u16 = 7335;
 const DEFAULT_STREAM_FPS: u32 = 24;
 const DEFAULT_JPEG_QUALITY: u8 = 75;
 const DEFAULT_STREAM_MAX_WIDTH: usize = 1280;
@@ -191,6 +190,7 @@ pub struct StreamStatus {
     pub active: bool,
     pub mode: String,
     pub addresses: Vec<String>,
+    pub web: Vec<String>,
     pub relay: Option<String>,
     pub room: Option<String>,
     pub viewers: usize,
@@ -226,6 +226,7 @@ struct ModeState {
     active: bool,
     mode: String,
     addresses: Vec<String>,
+    web: Vec<String>,
     relay: Option<String>,
     room: Option<String>,
 }
@@ -423,77 +424,57 @@ pub async fn ping_relay(url: String) -> Result<String, String> {
     }
 }
 
-impl Streaming {
+impl StreamHub {
+    /// Локальный режим: HTTP+WS-сервер уже поднят (`web::WebServer`), здесь
+    /// только помечаем трансляцию активной и публикуем адреса для зрителей.
     pub async fn arm_local(
-        &self,
+        self: &Arc<Self>,
         app: AppHandle,
-        port: Option<u16>,
+        port: u16,
         config: StreamConfig,
     ) -> Result<StreamStatus, String> {
-        self.0.set_config(config);
-        let port = port.unwrap_or_else(|| {
-            std::env::var("FEX_PORT")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(DEFAULT_PORT)
-        });
-        if self.0.mode.lock().unwrap().active {
-            return Ok(self.0.status());
+        self.set_config(config);
+        if self.is_active() {
+            return Ok(self.status());
         }
-        let addr = format!("0.0.0.0:{port}");
-        let listener = TcpListener::bind(&addr)
-            .await
-            .map_err(|e| format!("bind {addr}: {e}"))?;
-        *self.0.app.lock().unwrap() = Some(app);
-        let addresses = match local_addresses() {
-            Ok(mut ips) => {
-                ips.sort();
-                ips.iter().map(|ip| format!("ws://{ip}:{port}")).collect()
-            }
-            Err(_) => Vec::new(),
-        };
-        *self.0.mode.lock().unwrap() = ModeState {
+        *self.app.lock().unwrap() = Some(app);
+        let mut ips = local_addresses().unwrap_or_default();
+        ips.sort();
+        *self.mode.lock().unwrap() = ModeState {
             active: true,
             mode: "local".into(),
-            addresses: addresses.clone(),
+            addresses: ips.iter().map(|ip| format!("ws://{ip}:{port}")).collect(),
+            web: ips.iter().map(|ip| format!("http://{ip}:{port}/")).collect(),
             relay: None,
             room: None,
         };
-        self.0.stop.store(false, Ordering::Relaxed);
-        let hub = self.0.clone();
-        let stop = self.0.stop.clone();
-        let task = tokio::spawn(serve_local(hub, listener, stop));
-        *self.0.task.lock().unwrap() = Some(task);
-        Ok(self.0.status())
+        Ok(self.status())
     }
 
     pub async fn arm_relay(
-        &self,
+        self: &Arc<Self>,
         app: AppHandle,
         url: String,
         config: StreamConfig,
     ) -> Result<StreamStatus, String> {
-        self.0.set_config(config);
-        if self.0.mode.lock().unwrap().active {
-            return Ok(self.0.status());
+        self.set_config(config);
+        if self.mode.lock().unwrap().active {
+            return Ok(self.status());
         }
-        *self.0.app.lock().unwrap() = Some(app);
-        *self.0.mode.lock().unwrap() = ModeState {
+        *self.app.lock().unwrap() = Some(app);
+        *self.mode.lock().unwrap() = ModeState {
             active: true,
             mode: "relay".into(),
             addresses: Vec::new(),
+            web: Vec::new(),
             relay: Some(url.clone()),
             room: None,
         };
-        self.0.stop.store(false, Ordering::Relaxed);
-        let hub = self.0.clone();
-        let task = tokio::spawn(relay_client(hub, url));
-        *self.0.task.lock().unwrap() = Some(task);
-        Ok(self.0.status())
+        self.stop.store(false, Ordering::Relaxed);
+        let task = tokio::spawn(relay_client(self.clone(), url));
+        *self.task.lock().unwrap() = Some(task);
+        Ok(self.status())
     }
-}
-
-impl StreamHub {
     pub fn set_config(&self, config: StreamConfig) {
         *self.config.lock().unwrap() = config.normalized();
     }
@@ -507,11 +488,12 @@ impl StreamHub {
     }
 
     pub fn status(&self) -> StreamStatus {
-        let (mode, addresses, relay, room, active) = {
+        let (mode, addresses, web, relay, room, active) = {
             let m = self.mode.lock().unwrap();
             (
                 m.mode.clone(),
                 m.addresses.clone(),
+                m.web.clone(),
                 m.relay.clone(),
                 m.room.clone(),
                 m.active,
@@ -526,6 +508,7 @@ impl StreamHub {
             active,
             mode,
             addresses,
+            web,
             relay,
             room,
             viewers,
@@ -534,6 +517,8 @@ impl StreamHub {
         }
     }
 
+    /// Останавливает трансляцию, но оставляет веб-сервер поднятым:
+    /// иначе из «скрытого» режима приложение было бы не достать.
     pub fn deactivate(&self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(t) = self.task.lock().unwrap().take() {
@@ -647,6 +632,14 @@ impl StreamHub {
         self.inner.lock().unwrap().history.clone()
     }
 
+    pub fn welcome_snapshot(&self) -> (Vec<StreamEntry>, Vec<ChatMsg>) {
+        let i = self.inner.lock().unwrap();
+        (
+            i.streams.values().cloned().collect(),
+            i.history.clone(),
+        )
+    }
+
     pub fn set_room(&self, room: String) {
         let changed = {
             let mut mode = self.mode.lock().unwrap();
@@ -687,28 +680,13 @@ impl StreamHub {
     }
 }
 
-async fn serve_local(hub: Arc<StreamHub>, listener: TcpListener, stop: Arc<AtomicBool>) {
-    loop {
-        if stop.load(Ordering::Relaxed) {
-            break;
-        }
-        let (stream, _peer) = match listener.accept().await {
-            Ok(x) => x,
-            Err(_) => continue,
-        };
-        let hub2 = hub.clone();
-        tokio::spawn(async move {
-            if let Ok(ws) = tokio_tungstenite::accept_async(stream).await {
-                let _ = run_viewer(hub2, ws).await;
-            }
-        });
-    }
-}
-
-async fn run_viewer(
+pub(crate) async fn run_viewer<S>(
     hub: Arc<StreamHub>,
-    ws: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
-) -> Result<(), String> {
+    ws: tokio_tungstenite::WebSocketStream<S>,
+) -> Result<(), String>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
     let (mut sink, mut rstream) = ws.split();
 
     let hello = match rstream.next().await {
@@ -733,13 +711,7 @@ async fn run_viewer(
     if std::env::var_os("FEX_DEBUG").is_some() {
         eprintln!("[fuckexam] hub: viewer registered (id={id})");
     }
-    let (streams, history) = {
-        let i = hub.inner.lock().unwrap();
-        (
-            i.streams.values().cloned().collect::<Vec<_>>(),
-            i.history.clone(),
-        )
-    };
+    let (streams, history) = hub.welcome_snapshot();
     if sink
         .send(event_to_message(&ClientEvent::Welcome { streams, history }))
         .await
@@ -856,6 +828,18 @@ async fn relay_client(hub: Arc<StreamHub>, url: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::net::TcpListener;
+
+    /// Поднимает настоящий веб-сервер (HTTP+WS) на свободном порту.
+    async fn spawn_server(hub: Arc<StreamHub>) -> (u16, Arc<AtomicBool>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let stop = Arc::new(AtomicBool::new(false));
+        let server = crate::web::WebServer::new(hub, crate::settings::SettingsStore::ephemeral());
+        let stop_task = stop.clone();
+        tokio::spawn(async move { crate::web::serve(server, listener, stop_task).await });
+        (port, stop)
+    }
 
     #[test]
     fn jpeg_encode_bgra() {
@@ -1075,12 +1059,9 @@ mod tests {
         use std::time::Duration;
 
         let hub = Arc::new(StreamHub::default());
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let stop = Arc::new(AtomicBool::new(false));
-        tokio::spawn(serve_local(hub.clone(), listener, stop.clone()));
+        let (port, stop) = spawn_server(hub.clone()).await;
 
-        let url = format!("ws://127.0.0.1:{port}");
+        let url = format!("ws://127.0.0.1:{port}/ws");
         let (mut ws, _resp) = tokio_tungstenite::connect_async(&url).await.unwrap();
         ws.send(Message::Text(
             json!({"type":"hello","role":"viewer"}).to_string().into(),
@@ -1165,12 +1146,9 @@ mod tests {
         use std::time::Duration;
 
         let hub = Arc::new(StreamHub::default());
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let stop = Arc::new(AtomicBool::new(false));
-        tokio::spawn(serve_local(hub.clone(), listener, stop.clone()));
+        let (port, stop) = spawn_server(hub.clone()).await;
 
-        let url = format!("ws://127.0.0.1:{port}");
+        let url = format!("ws://127.0.0.1:{port}/ws");
         let (mut ws, _resp) = tokio_tungstenite::connect_async(&url).await.unwrap();
         ws.send(Message::Text(
             json!({"type":"hello","role":"viewer"}).to_string().into(),

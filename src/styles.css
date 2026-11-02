@@ -595,6 +595,51 @@ h1.small { font-size: 26px; }
 
 .s-copy-all span { font-size: 12px; color: var(--text-dim); }
 
+/* ---------------- настройки ---------------- */
+
+#view-settings .container {
+    justify-content: flex-start;
+    overflow-y: auto;
+    gap: 14px;
+    padding-top: 28px;
+    padding-bottom: 28px;
+}
+
+#view-settings header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    max-width: 560px;
+}
+
+#view-settings .panel { max-width: 560px; }
+
+#view-settings .link-btn { margin-top: 0; }
+
+.s-checks {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.chk {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--text-dim);
+    cursor: pointer;
+}
+
+.chk input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
 .rec-layout {
     display: grid;
     width: 100%; min-width: 0;

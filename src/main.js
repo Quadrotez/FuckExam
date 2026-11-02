@@ -22,6 +22,7 @@ async function checkPlatformAtStartup() {
 function applyMobileUi() {
     document.documentElement.dataset.mobile = 'true';
     document.querySelector('.role-card[data-role="recorder"]')?.remove();
+    document.querySelectorAll('[data-desktop-only]').forEach((el) => el.remove());
     const hint = document.querySelector('#view-landing .hint');
     if (hint) hint.textContent = 'просмотр трансляции и чат';
     const subtitle = document.querySelector('#view-landing .subtitle');
@@ -31,7 +32,7 @@ function applyMobileUi() {
 
 /* ---------------- view router ---------------- */
 
-const views = ['landing', 'recorder', 'viewer'];
+const views = ['landing', 'recorder', 'settings', 'viewer'];
 
 function showView(name) {
     views.forEach((v) => $('view-' + v).classList.toggle('active', v === name));
@@ -41,7 +42,7 @@ function showView(name) {
         refresh();
     }
     if (name === 'viewer') {
-        doDisconnect();
+        maybeReconnect();
     }
 }
 
@@ -188,7 +189,7 @@ async function handleClick() {
 
 btn.addEventListener('click', handleClick);
 
-/* ---------------- recorder / streaming ---------------- */
+/* ---------------- settings / streaming ---------------- */
 
 const sModeWrap = $('seg-mode');
 const sPort = $('s-port');
@@ -201,77 +202,230 @@ const sStop = $('s-stop');
 const sStatusEl = $('s-status');
 const sRelayCheck = $('s-relay-check');
 const sRelayCheckStatus = $('s-relay-check-status');
-const sStatusBox = document.querySelector('#view-recorder .status-bar');
+const sSave = $('s-save');
+const sSaveFeedback = $('s-save-feedback');
+const sWebLaunch = $('s-web-launch');
+const sCloseTray = $('s-close-tray');
+const sHideTray = $('s-hide-tray');
+const sHideAll = $('s-hide-all');
+const webLinksEl = $('web-links');
+const webCopy = $('web-copy');
+const webCopyAdmin = $('web-copy-admin');
 
-const SETTINGS_KEY = 'fuckexam-settings';
+const VIEWER_PREFS_KEY = 'fuckexam-viewer-prefs';
+const VIEWER_SESSION_KEY = 'fuckexam-viewer-session';
+const VIEWER_SESSION_TTL_MS = 30 * 60 * 1000;
+const DEFAULT_SETTINGS = {
+    port: 7335,
+    fps: 24,
+    quality: 75,
+    maxWidth: 1280,
+    relayUrl: '',
+    mode: 'local',
+    webOnLaunch: true,
+    closeToTray: true,
+};
 
-function loadSettings() {
-    try {
-        const raw = localStorage.getItem(SETTINGS_KEY);
-        if (!raw) return;
-        const s = JSON.parse(raw);
-        if (s.port) sPort.value = s.port;
-        if (s.relayUrl) sRelayUrl.value = s.relayUrl;
-        if (s.fps) sFps.value = s.fps;
-        if (s.quality) sQuality.value = s.quality;
-        if (s.maxWidth) sMaxw.value = s.maxWidth;
-        if (s.viewerUrl) vUrl.value = s.viewerUrl;
-        if (s.viewerRoom) vRoom.value = s.viewerRoom;
-        if (s.viewerName) vName.value = s.viewerName;
-    } catch (_) {}
-}
-
-function saveSettings() {
-    try {
-        localStorage.setItem(
-            SETTINGS_KEY,
-            JSON.stringify({
-                port: sPort.value,
-                relayUrl: sRelayUrl.value,
-                fps: sFps.value,
-                quality: sQuality.value,
-                maxWidth: sMaxw.value,
-                viewerUrl: vUrl.value,
-                viewerRoom: vRoom.value,
-                viewerName: vName.value,
-            })
-        );
-    } catch (_) {}
-}
-
+let appSettings = { ...DEFAULT_SETTINGS };
+let webInfo = { running: false, port: 7335, addresses: [] };
 let sMode = 'local';
-let sActAddr = '';
+let sPollTimer = null;
+
+function setSaveFeedback(text, kind = '') {
+    sSaveFeedback.textContent = text;
+    sSaveFeedback.classList.toggle('error', kind === 'error');
+    sSaveFeedback.classList.toggle('success', kind === 'success');
+}
 
 function setSeg(mode) {
-    sMode = mode;
+    sMode = mode === 'relay' ? 'relay' : 'local';
     sModeWrap.querySelectorAll('.seg-btn').forEach((b) => {
-        b.classList.toggle('active', b.dataset.mode === mode);
+        b.classList.toggle('active', b.dataset.mode === sMode);
     });
-    const relayOnly = mode === 'relay';
+    const relayOnly = sMode === 'relay';
     document.querySelectorAll('.s-field[data-field]').forEach((f) => {
         const isPort = f.dataset.field === 'port';
         f.style.display = relayOnly === isPort ? 'none' : 'flex';
     });
-    sActAddr = '';
-    renderSStatus(null);
 }
 
 sModeWrap.querySelectorAll('.seg-btn').forEach((b) => {
     b.addEventListener('click', () => {
         setSeg(b.dataset.mode);
-        sActAddr = '';
         renderSStatus(null);
     });
 });
 
-let sPollTimer = null;
+function normalizeRelayUrl(raw) {
+    const value = String(raw || '').trim();
+    if (!value) return '';
+    return value.startsWith('ws://') || value.startsWith('wss://') ? value : 'ws://' + value;
+}
+
+function applySettingsToUi(s) {
+    if (!s) return;
+    sPort.value = s.port;
+    sFps.value = String(s.fps);
+    sQuality.value = String(s.quality);
+    sMaxw.value = String(s.maxWidth);
+    sRelayUrl.value = s.relayUrl || '';
+    sWebLaunch.checked = s.webOnLaunch !== false;
+    sCloseTray.checked = s.closeToTray !== false;
+    setSeg(s.mode);
+}
+
+function collectSettings() {
+    return {
+        port: parseInt(sPort.value, 10) || DEFAULT_SETTINGS.port,
+        fps: parseInt(sFps.value, 10) || DEFAULT_SETTINGS.fps,
+        quality: parseInt(sQuality.value, 10) || DEFAULT_SETTINGS.quality,
+        maxWidth: parseInt(sMaxw.value, 10) || DEFAULT_SETTINGS.maxWidth,
+        relayUrl: normalizeRelayUrl(sRelayUrl.value),
+        mode: sMode,
+        webOnLaunch: sWebLaunch.checked,
+        closeToTray: sCloseTray.checked,
+    };
+}
+
+async function loadAppSettings() {
+    try {
+        appSettings = await invoke('get_settings');
+    } catch (e) {
+        console.error('[fuckexam] settings load failed:', e);
+        appSettings = { ...DEFAULT_SETTINGS };
+    }
+    applySettingsToUi(appSettings);
+    await refreshWebInfo();
+}
+
+async function saveAppSettings() {
+    const saved = await invoke('save_settings', { settings: collectSettings() });
+    appSettings = saved;
+    applySettingsToUi(saved);
+    await refreshWebInfo();
+    return saved;
+}
+
+async function refreshWebInfo() {
+    try {
+        webInfo = await invoke('web_info');
+    } catch (_) {
+        return;
+    }
+    renderWebLinks();
+}
+
+function renderWebLinks() {
+    if (!webLinksEl) return;
+    const links = (webInfo.addresses || []).filter((a) => !a.includes('/admin'));
+    const admin = (webInfo.addresses || []).find((a) => a.includes('/admin')) || '';
+    const items = [];
+    links.forEach((a) => items.push(a));
+    if (admin) items.push(admin);
+    webLinksEl.innerHTML = items.length
+        ? items
+              .map(
+                  (a) =>
+                      `<div class="s-addr"><code>${escapeHtml(a)}</code>` +
+                      `<button class="btn-mini" data-copy="${escapeHtml(a)}">Копировать</button></div>`
+              )
+              .join('')
+        : '<div class="s-sec">веб-сервер выключен</div>';
+    if (!webInfo.running) {
+        webLinksEl.innerHTML += '<div class="s-sec">сервер поднимется при запуске приложения или трансляции</div>';
+    }
+    wireCopyButtons(webLinksEl);
+}
+
+async function writeClipboard(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        try {
+            await navigator.clipboard.writeText(text);
+            return true;
+        } catch (_) {}
+    }
+    try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        ta.remove();
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
+
+function wireCopyButtons(root) {
+    root.querySelectorAll('[data-copy]').forEach((button) => {
+        button.addEventListener('click', async () => {
+            const done = await writeClipboard(String(button.dataset.copy));
+            const original = button.textContent;
+            button.textContent = done ? 'Готово' : 'Не вышло';
+            setTimeout(() => (button.textContent = original), 1200);
+        });
+    });
+    root.querySelectorAll('[data-copy-all]').forEach((button) => {
+        button.addEventListener('click', async () => {
+            const [addr, room] = String(button.dataset.copyAll).split('|');
+            const done = await writeClipboard(`${addr}\nкомната: ${room}`);
+            button.textContent = done ? 'Готово' : 'Не вышло';
+            setTimeout(() => (button.textContent = 'Копировать'), 1200);
+        });
+    });
+}
+
+sSave.addEventListener('click', async () => {
+    setSaveFeedback('сохранение…');
+    try {
+        await saveAppSettings();
+        setSaveFeedback('сохранено', 'success');
+    } catch (e) {
+        setSaveFeedback(String(e), 'error');
+    }
+});
+
+sHideTray.addEventListener('click', async () => {
+    try {
+        await saveAppSettings();
+        await invoke('window_to_tray');
+    } catch (e) {
+        setSaveFeedback(String(e), 'error');
+    }
+});
+
+sHideAll.addEventListener('click', async () => {
+    const ok = confirm(
+        'Скрыть окно и иконку трея? Вернуться можно только через веб-админку на этом компьютере.'
+    );
+    if (!ok) return;
+    try {
+        await saveAppSettings();
+        await invoke('window_hide_all');
+    } catch (e) {
+        setSaveFeedback(String(e), 'error');
+    }
+});
+
+if (webCopy) {
+    webCopy.addEventListener('click', () => {
+        const link = (webInfo.addresses || []).find((a) => !a.includes('/admin'));
+        if (link) writeClipboard(link);
+    });
+}
+if (webCopyAdmin) {
+    webCopyAdmin.addEventListener('click', () => {
+        const admin = (webInfo.addresses || []).find((a) => a.includes('/admin'));
+        if (admin) writeClipboard(admin);
+    });
+}
 
 function sTickerStart() {
     if (sPollTimer) return;
     sPollTimer = setInterval(async () => {
         try {
-            const st = await invoke('stream_status');
-            renderSStatus(st);
+            renderSStatus(await invoke('stream_status'));
         } catch (_) {}
     }, 1500);
 }
@@ -286,96 +440,53 @@ function sTickerStop() {
 function renderSStatus(st) {
     if (st && st.active) {
         let html = '';
-        if (sMode === 'local' && st.addresses.length) {
-            html += '<div class="s-sec">Зрители подключаются по адресу:</div>';
-            html += '<div class="s-addrs">';
-            st.addresses.forEach((a) => {
-                html +=
-                    `<div class="s-addr"><code>${escapeHtml(a)}</code>` +
-                    `<button class="btn-mini" data-copy="${escapeHtml(a)}">Скопировать</button></div>`;
-            });
-            html += '</div>';
-            sActAddr = st.addresses[0] || '';
-        } else if (sMode === 'relay') {
+        if (st.mode === 'local') {
+            if (st.addresses && st.addresses.length) {
+                html += '<div class="s-sec">Приложение/Android подключается по адресу:</div>';
+                html += '<div class="s-addrs">';
+                st.addresses.forEach((a) => {
+                    html +=
+                        `<div class="s-addr"><code>${escapeHtml(a)}</code>` +
+                        `<button class="btn-mini" data-copy="${escapeHtml(a)}">Копировать</button></div>`;
+                });
+                html += '</div>';
+            }
+            if (st.web && st.web.length) {
+                html += '<div class="s-sec">Браузер:</div>';
+                html += '<div class="s-addrs">';
+                st.web.forEach((a) => {
+                    html +=
+                        `<div class="s-addr"><code>${escapeHtml(a)}</code>` +
+                        `<button class="btn-mini" data-copy="${escapeHtml(a)}">Копировать</button></div>`;
+                });
+                html += '</div>';
+            }
+        } else {
             html += '<div class="s-sec">Подключение к relay:</div>';
             html += '<div class="s-addrs">';
             html +=
                 `<div class="s-addr"><code>${escapeHtml(st.relay || '')}</code>` +
-                `<button class="btn-mini" data-copy="${escapeHtml(st.relay || '')}">Скопировать</button></div>`;
+                `<button class="btn-mini" data-copy="${escapeHtml(st.relay || '')}">Копировать</button></div>`;
             if (!st.room) {
                 html += '<div class="s-sec">Комната создаётся на сервере…</div>';
             }
             if (st.room) {
+                html += '<div class="s-sec">Укажите зрителю:</div>';
                 html +=
                     `<div class="s-addr s-room"><code>${escapeHtml(st.room)}</code>` +
-                    `<button class="btn-mini" data-copy="${escapeHtml(st.room)}">Скопировать</button></div>`;
+                    `<button class="btn-mini" data-copy="${escapeHtml(st.room)}">Копировать комнату</button></div>`;
+                html +=
+                    `<div class="s-addr s-copy-all"><span>Скопировать всё</span>` +
+                    `<button class="btn-mini" data-copy-all="${escapeHtml(st.relay || '')}|${escapeHtml(st.room)}">Копировать</button></div>`;
             }
             html += '</div>';
-            if (st.relay) {
-                const roomTxt = st.room ? st.room : '';
-                html += '<div class="s-sec">Укажите зрителю:</div>';
-                html += '<div class="s-addrs">';
-                html +=
-                    `<div class="s-addr"><code>${escapeHtml(st.relay)}</code>` +
-                    `<button class="btn-mini" data-copy="${escapeHtml(st.relay)}">Копировать адрес</button></div>`;
-                if (roomTxt) {
-                    html +=
-                        `<div class="s-addr s-room"><code>${escapeHtml(roomTxt)}</code>` +
-                        `<button class="btn-mini" data-copy="${escapeHtml(roomTxt)}">Копировать комнату</button></div>`;
-                    html +=
-                        `<div class="s-addr s-copy-all"><span>Скопировать всё</span>` +
-                        `<button class="btn-mini" data-copy-all="${escapeHtml(st.relay)}|${escapeHtml(roomTxt)}">Копировать</button></div>`;
-                }
-                html += '</div>';
-            }
-            sActAddr = st.relay || '';
         }
         html +=
             `<div class="s-sec">В сети: <b>${st.viewers}</b> зрителей · ` +
             `стримов: ${st.streams.length} · кадров: ${st.frames ?? 0}</div>`;
         sStatusEl.innerHTML = html;
         sStatusEl.classList.remove('hidden');
-        sStatusEl.querySelectorAll('[data-copy]').forEach((b) => {
-            b.addEventListener('click', () => {
-                const t = String(b.dataset.copy);
-                const done = () => {
-                    b.textContent = 'Готово';
-                    setTimeout(() => (b.textContent = 'Скопировать'), 1200);
-                };
-                if (navigator.clipboard && navigator.clipboard.writeText) {
-                    navigator.clipboard.writeText(t).then(done, done);
-                } else {
-                    const ta = document.createElement('textarea');
-                    ta.value = t;
-                    document.body.appendChild(ta);
-                    ta.select();
-                    document.execCommand('copy');
-                    ta.remove();
-                    done();
-                }
-            });
-        });
-        sStatusEl.querySelectorAll('[data-copy-all]').forEach((b) => {
-            b.addEventListener('click', () => {
-                const [addr, room] = String(b.dataset.copyAll).split('|');
-                const t = `${addr}\nкомната: ${room}`;
-                const done = () => {
-                    b.textContent = 'Готово';
-                    setTimeout(() => (b.textContent = 'Копировать'), 1200);
-                };
-                if (navigator.clipboard && navigator.clipboard.writeText) {
-                    navigator.clipboard.writeText(t).then(done, done);
-                } else {
-                    const ta = document.createElement('textarea');
-                    ta.value = t;
-                    document.body.appendChild(ta);
-                    ta.select();
-                    document.execCommand('copy');
-                    ta.remove();
-                    done();
-                }
-            });
-        });
+        wireCopyButtons(sStatusEl);
         sStart.disabled = true;
         sStop.disabled = false;
         sTickerStart();
@@ -390,28 +501,24 @@ function renderSStatus(st) {
 
 async function streamStart() {
     try {
-        let relayUrl = sRelayUrl.value.trim();
-        if (sMode === 'relay' && relayUrl && !relayUrl.startsWith('ws://') && !relayUrl.startsWith('wss://')) {
-            relayUrl = 'ws://' + relayUrl;
-            sRelayUrl.value = relayUrl;
-        }
-        const perf = {
-            fps: parseInt(sFps.value, 10) || 24,
-            quality: parseInt(sQuality.value, 10) || 75,
-            maxWidth: parseInt(sMaxw.value, 10) || 1280,
+        const settings = await saveAppSettings();
+        const options = {
+            fps: settings.fps,
+            quality: settings.quality,
+            maxWidth: settings.maxWidth,
         };
-        const st =
-            sMode === 'local'
-                ? await invoke('stream_start', {
-                      port: parseInt(sPort.value, 10) || 7335,
-                      ...perf,
-                  })
-                : await invoke('relay_connect', {
-                      url: relayUrl,
-                      ...perf,
-                  });
-        saveSettings();
+        let st;
+        if (settings.mode === 'relay') {
+            if (!settings.relayUrl) {
+                setStatus('трансляция: укажите адрес relay в настройках', false);
+                return;
+            }
+            st = await invoke('relay_connect', { url: settings.relayUrl, options });
+        } else {
+            st = await invoke('stream_start', { options });
+        }
         renderSStatus(st);
+        await refreshWebInfo();
     } catch (e) {
         setStatus('трансляция: ' + String(e), false);
     }
@@ -431,34 +538,27 @@ sStart.addEventListener('click', streamStart);
 sStop.addEventListener('click', streamStop);
 
 sRelayCheck.addEventListener('click', async () => {
-    let url = sRelayUrl.value.trim();
+    const url = normalizeRelayUrl(sRelayUrl.value);
     if (!url) {
         sRelayCheckStatus.textContent = 'введите адрес relay';
         sRelayCheckStatus.classList.remove('ok');
         sRelayCheckStatus.classList.add('err');
         return;
     }
-    if (!url.startsWith('ws://') && !url.startsWith('wss://')) {
-        url = 'ws://' + url;
-        sRelayUrl.value = url;
-    }
+    sRelayUrl.value = url;
     sRelayCheck.disabled = true;
     sRelayCheckStatus.textContent = 'проверка…';
     sRelayCheckStatus.classList.remove('ok', 'err');
     try {
-        const msg = await invoke('relay_ping', { url });
-        sRelayCheckStatus.textContent = '✓ ' + msg;
+        sRelayCheckStatus.textContent = '✓ ' + (await invoke('relay_ping', { url }));
         sRelayCheckStatus.classList.add('ok');
     } catch (e) {
         sRelayCheckStatus.textContent = '✗ ' + String(e);
         sRelayCheckStatus.classList.add('err');
     } finally {
         sRelayCheck.disabled = false;
-        saveSettings();
     }
 });
-
-setSeg('local');
 
 listen('stream-room', () => {
     invoke('stream_status').then(renderSStatus).catch(() => {});
@@ -607,6 +707,9 @@ let vFrames = 0;
 let vConnAborted = false;
 let vServerError = '';
 let pendingChatImage = null;
+let vReconnectTimer = null;
+let vReconnectDelay = 1500;
+let vUserClosed = false;
 const vstreams = new Map(); // node -> { img, stale }
 
 function vSetStatus(text) {
@@ -819,8 +922,9 @@ function vHandleMsg(evt) {
         switch (msg.type) {
             case 'welcome':
                 vFrames = 0;
-                vReconcile(msg.streams);
-                if (msg.streams.length === 0) {
+                vChatLog.innerHTML = '';
+                vReconcile(msg.streams || []);
+                if (!msg.streams || msg.streams.length === 0) {
                     vSetStatus('подключено, стримов нет — ждите записывающего или проверьте комнату');
                 } else {
                     vSetStatus(`подключено (${msg.streams.length} стримов)`);
@@ -830,8 +934,8 @@ function vHandleMsg(evt) {
                 }
                 break;
             case 'streams':
-                vReconcile(msg.streams);
-                if (msg.streams.length === 0) {
+                vReconcile(msg.streams || []);
+                if (!msg.streams || msg.streams.length === 0) {
                     vSetStatus('подключено, стримов нет');
                 } else {
                     vSetStatus(`подключено (${msg.streams.length} стримов)`);
@@ -860,7 +964,102 @@ function vHandleMsg(evt) {
     }
 }
 
-function doConnect() {
+function loadViewerPrefs() {
+    try {
+        const raw = localStorage.getItem(VIEWER_PREFS_KEY);
+        if (!raw) return;
+        const prefs = JSON.parse(raw);
+        if (prefs.url) vUrl.value = prefs.url;
+        if (prefs.room) vRoom.value = prefs.room;
+        if (prefs.name) vName.value = prefs.name;
+    } catch (_) {}
+}
+
+function saveViewerPrefs() {
+    try {
+        localStorage.setItem(
+            VIEWER_PREFS_KEY,
+            JSON.stringify({
+                url: vUrl.value.trim(),
+                room: vRoom.value.trim(),
+                name: vName.value.trim(),
+            })
+        );
+    } catch (_) {}
+}
+
+function saveViewerSession() {
+    try {
+        localStorage.setItem(
+            VIEWER_SESSION_KEY,
+            JSON.stringify({
+                url: vUrl.value.trim(),
+                room: vRoom.value.trim(),
+                name: vName.value.trim(),
+                savedAt: Date.now(),
+            })
+        );
+    } catch (_) {}
+}
+
+function touchViewerSession() {
+    if (vsock || readViewerSession()) saveViewerSession();
+}
+
+function dropViewerSession() {
+    try {
+        localStorage.removeItem(VIEWER_SESSION_KEY);
+    } catch (_) {}
+}
+
+function readViewerSession() {
+    try {
+        const raw = localStorage.getItem(VIEWER_SESSION_KEY);
+        if (!raw) return null;
+        const session = JSON.parse(raw);
+        if (!session || !session.url) return null;
+        if (
+            typeof session.savedAt !== 'number' ||
+            Date.now() - session.savedAt > VIEWER_SESSION_TTL_MS
+        ) {
+            dropViewerSession();
+            return null;
+        }
+        return session;
+    } catch (_) {
+        return null;
+    }
+}
+
+function viewerActive() {
+    return !isChatWindow && $('view-viewer').classList.contains('active');
+}
+
+function maybeReconnect() {
+    if (!viewerActive() || vUserClosed) return;
+    if (vsock && vsock.readyState !== WebSocket.CLOSED) return;
+    const session = readViewerSession();
+    if (!session) return;
+    if (!vUrl.value.trim()) vUrl.value = session.url;
+    if (!vRoom.value.trim() && session.room) vRoom.value = session.room;
+    if (!vName.value.trim() && session.name) vName.value = session.name;
+    vReconnectDelay = 1500;
+    doConnect({ auto: true });
+}
+
+function scheduleReconnect() {
+    clearTimeout(vReconnectTimer);
+    if (vUserClosed || !readViewerSession()) return;
+    const delay = vReconnectDelay;
+    vReconnectDelay = Math.min(vReconnectDelay * 2, 15000);
+    vReconnectTimer = setTimeout(() => {
+        if (document.hidden) return;
+        maybeReconnect();
+    }, delay);
+}
+
+function doConnect(options = {}) {
+    if (vsock && vsock.readyState !== WebSocket.CLOSED) return;
     let url = vUrl.value.trim();
     if (!url) {
         vSetStatus('введите адрес ws://…');
@@ -877,11 +1076,13 @@ function doConnect() {
         vSetStatus('неверный адрес (нужен формат ws://ip:port)');
         return;
     }
+    clearTimeout(vReconnectTimer);
+    vUserClosed = false;
     vConnAborted = false;
     vServerError = '';
     vsock = ws;
     ws.binaryType = 'arraybuffer';
-    vSetStatus('подключение…');
+    vSetStatus(options.auto ? 'переподключение…' : 'подключение…');
     vConnect.disabled = true;
     vDisconnect.disabled = false;
 
@@ -892,13 +1093,20 @@ function doConnect() {
             try {
                 ws.close();
             } catch (_) {}
-            vResetConn();
+            if (vsock === ws) {
+                vsock = null;
+                vConnect.disabled = false;
+                vDisconnect.disabled = true;
+                scheduleReconnect();
+            }
         }
     }, 8000);
 
     ws.addEventListener('open', () => {
         clearTimeout(connTimer);
-        saveSettings();
+        vReconnectDelay = 1500;
+        saveViewerPrefs();
+        saveViewerSession();
         ws.send(
             JSON.stringify({
                 type: 'hello',
@@ -910,10 +1118,20 @@ function doConnect() {
     ws.addEventListener('message', vHandleMsg);
     ws.addEventListener('close', () => {
         clearTimeout(connTimer);
-        if (!vConnAborted) {
-            vSetStatus(vServerError ? 'ошибка: ' + vServerError : 'отключено');
-        }
+        if (vsock !== ws) return;
         vResetConn();
+        if (vUserClosed) {
+            vSetStatus('отключено');
+            return;
+        }
+        if (vConnAborted) return;
+        vSetStatus(
+            vServerError
+                ? 'ошибка: ' + vServerError
+                : 'соединение потеряно, переподключаемся…'
+        );
+        saveViewerSession();
+        scheduleReconnect();
     });
     ws.addEventListener('error', () => {
         clearTimeout(connTimer);
@@ -932,16 +1150,37 @@ function vResetConn() {
 }
 
 function doDisconnect() {
+    vUserClosed = true;
+    clearTimeout(vReconnectTimer);
+    dropViewerSession();
     if (vsock) {
         try {
             vsock.close();
         } catch (_) {}
     }
     vResetConn();
+    vFrames = 0;
+    vSetStatus('отключено');
 }
 
-vConnect.addEventListener('click', doConnect);
+vConnect.addEventListener('click', () => doConnect());
 vDisconnect.addEventListener('click', doDisconnect);
+
+// Android сворачивает WebView и теряет WebSocket: при возврате в приложение
+// молча восстанавливаем соединение, если сессия ещё не протухла.
+document.addEventListener('visibilitychange', () => {
+    if (!viewerActive()) return;
+    if (document.hidden) {
+        touchViewerSession();
+        return;
+    }
+    maybeReconnect();
+});
+window.addEventListener('online', maybeReconnect);
+window.addEventListener('focus', maybeReconnect);
+if (!isChatWindow) {
+    listen('app-resumed', maybeReconnect);
+}
 
 vChatAttach.addEventListener('click', () => vChatImageInput.click());
 vChatImageInput.addEventListener('change', async () => {
@@ -997,6 +1236,8 @@ vChatForm.addEventListener('submit', (e) => {
         vsock.send(JSON.stringify(message));
         vChatInput.value = '';
         clearPendingChatImage();
+        saveViewerPrefs();
+        saveViewerSession();
         setChatFeedback('Сообщение отправлено.', 'success');
     } catch (err) {
         setChatFeedback('Не удалось отправить сообщение: ' + String(err), 'error');
@@ -1116,7 +1357,8 @@ async function populateDetachedChatHistory() {
 
 /* ---------------- boot ---------------- */
 
-loadSettings();
+loadViewerPrefs();
+void loadAppSettings();
 checkPlatformAtStartup();
 if (isChatWindow) {
     document.documentElement.dataset.chatWindow = 'true';

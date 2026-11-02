@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>FuckExam · управление</title>
+    <link rel="stylesheet" href="/style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>🎥</text></svg>">
+</head>
+<body>
+<div class="wrap">
+    <header class="top">
+        <div class="logo"><span class="mark">◈</span> F<span class="accent">u</span>ckExam <span class="muted">управление</span></div>
+        <a class="muted small" href="/">← к плееру</a>
+    </header>
+
+    <section class="panel">
+        <h2>Состояние</h2>
+        <table class="status">
+            <tr><td>Трансляция</td><td id="st-active">—</td></tr>
+            <tr><td>Режим</td><td id="st-mode">—</td></tr>
+            <tr><td>Адрес в сети</td><td id="st-web">—</td></tr>
+            <tr><td>Relay / комната</td><td id="st-relay">—</td></tr>
+            <tr><td>Зрителей / кадров</td><td id="st-viewers">—</td></tr>
+            <tr><td>Веб-порт</td><td id="st-port">—</td></tr>
+        </table>
+        <div class="row" style="margin-top:14px">
+            <button id="btn-start" class="primary">Запустить трансляцию</button>
+            <button id="btn-stop">Остановить</button>
+            <button id="btn-tray">Скрыть в трей</button>
+            <button id="btn-show">Показать окно</button>
+            <button id="btn-hide" class="danger">Скрыть полностью</button>
+            <button id="btn-quit" class="danger">Выход</button>
+        </div>
+        <div id="status-feedback" class="feedback" aria-live="polite"></div>
+    </section>
+
+    <section class="panel">
+        <h2>Настройки</h2>
+        <form id="settings-form">
+            <div class="row">
+                <div class="field">
+                    <label for="port">Порт (веб + трансляция)</label>
+                    <input id="port" type="number" min="1024" max="65535" step="1">
+                </div>
+                <div class="field">
+                    <label for="fps">FPS трансляции</label>
+                    <input id="fps" type="number" min="1" max="60" step="1">
+                </div>
+                <div class="field">
+                    <label for="quality">Качество JPEG</label>
+                    <input id="quality" type="number" min="1" max="100" step="1">
+                </div>
+                <div class="field">
+                    <label for="maxWidth">Макс. ширина</label>
+                    <input id="maxWidth" type="number" min="64" max="3840" step="16">
+                </div>
+            </div>
+            <div class="row" style="margin-top:12px">
+                <div class="field">
+                    <label for="mode">Режим</label>
+                    <select id="mode">
+                        <option value="local">Локально (веб + LAN)</option>
+                        <option value="relay">Через relay</option>
+                    </select>
+                </div>
+                <div class="field" style="flex:2">
+                    <label for="relayUrl">Relay WS</label>
+                    <input id="relayUrl" placeholder="ws://host:7444" spellcheck="false">
+                </div>
+            </div>
+            <div class="tools" style="margin-top:12px">
+                <label><input id="webOnLaunch" type="checkbox"> Поднимать веб-сервер при запуске</label>
+                <label><input id="closeToTray" type="checkbox"> Крестик скрывает в трей</label>
+            </div>
+            <div class="row" style="margin-top:14px">
+                <button type="submit" class="primary">Сохранить</button>
+                <button type="button" id="btn-reload">Сбросить к сохранённому</button>
+            </div>
+            <div id="settings-feedback" class="feedback" aria-live="polite"></div>
+        </form>
+    </section>
+</div>
+<script src="/admin.js"></script>
+</body>
+</html>
