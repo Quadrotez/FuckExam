@@ -8,6 +8,7 @@ pub mod capture;
 #[path = "capture_mobile.rs"]
 pub mod capture;
 
+pub mod chat_hide;
 pub mod diag;
 pub mod settings;
 
@@ -206,6 +207,11 @@ fn chat_history(state: State<'_, streaming::Streaming>) -> Vec<streaming::ChatMs
 #[cfg(desktop)]
 #[tauri::command]
 async fn open_chat_window(app: AppHandle) -> Result<(), String> {
+    open_chat_window_impl(&app).await
+}
+
+#[cfg(desktop)]
+pub(crate) async fn open_chat_window_impl(app: &AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("chat") {
         window.show().map_err(|e| format!("show chat window: {e}"))?;
         window
@@ -214,10 +220,10 @@ async fn open_chat_window(app: AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
-    WebviewWindowBuilder::new(&app, "chat", WebviewUrl::App("index.html".into()))
+    WebviewWindowBuilder::new(app, "chat", WebviewUrl::App("index.html".into()))
         .title("FuckExam — Чат")
         .inner_size(420.0, 620.0)
-        .min_inner_size(320.0, 320.0)
+        .min_inner_size(200.0, 160.0)
         .resizable(true)
         .center()
         .icon(APP_ICON.clone())
@@ -274,6 +280,7 @@ pub fn run() {
                 if let Err(e) = tray::setup(app.handle()) {
                     diag::log(&format!("tray: {e}"));
                 }
+                chat_hide::spawn(app.handle().clone());
             }
             setup_web.set_app(app.handle().clone());
 

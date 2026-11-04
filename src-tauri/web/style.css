@@ -118,7 +118,50 @@ a:hover { text-decoration: underline; }
 .msg { background: var(--panel-2); border-radius: 8px; padding: 7px 10px; overflow-wrap: anywhere; }
 .msg .from { color: var(--accent); font-size: 12px; margin-right: 8px; }
 .msg img { display: block; max-width: 100%; border-radius: 6px; margin-top: 6px; }
-.msg pre { overflow-x: auto; }
+.msg pre {
+    margin: 8px 0;
+    padding: 8px 0;
+    background: #070a0d;
+    border: 1px solid var(--border);
+    border-left: 2px solid var(--accent);
+    border-radius: 8px;
+    overflow: hidden;
+    white-space: normal;
+}
+.msg pre.code-block code {
+    display: block;
+    font-family: ui-monospace, 'JetBrains Mono', 'Cascadia Code', monospace;
+    font-size: 12px;
+    line-height: 1.55;
+}
+.code-line {
+    display: grid;
+    grid-template-columns: minmax(2.2em, auto) minmax(0, 1fr);
+    gap: 10px;
+    padding-right: 10px;
+}
+.code-line:hover { background: rgba(53, 208, 138, 0.06); }
+.code-no {
+    padding-left: 8px;
+    text-align: right;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    user-select: none;
+}
+.code-src {
+    min-width: 0;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+.msg :not(pre) > code {
+    font-family: ui-monospace, 'JetBrains Mono', 'Cascadia Code', monospace;
+    font-size: 0.92em;
+    padding: 1px 5px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+}
 
 .chat-form { display: flex; flex-direction: column; gap: 8px; }
 input, textarea, select, button {

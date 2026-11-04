@@ -10,7 +10,7 @@ use std::{
 };
 
 use serde_json::{json, Value};
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf},
     net::{TcpListener, TcpStream},
@@ -19,14 +19,16 @@ use tokio::{
 
 use crate::{
     settings::{Settings, SettingsStore},
-    streaming::{self, StreamConfig, StreamStatus, StreamHub},
+    streaming::{self, ChatImage, StreamConfig, StreamStatus, StreamHub},
 };
 
 const INDEX_HTML: &str = include_str!("../web/index.html");
 const APP_JS: &str = include_str!("../web/app.js");
 const STYLE_CSS: &str = include_str!("../web/style.css");
-const ADMIN_HTML: &str = include_str!("../web/admin.html");
-const ADMIN_JS: &str = include_str!("../web/admin.js");
+const SHIM_JS: &str = include_str!("../web/tauri-shim.js");
+const DESKTOP_INDEX: &str = include_str!("../../src/index.html");
+const DESKTOP_JS: &str = include_str!("../../src/main.js");
+const DESKTOP_CSS: &str = include_str!("../../src/styles.css");
 const MARKED_JS: &str = include_str!("../../src/vendor/marked.umd.js");
 const PURIFY_JS: &str = include_str!("../../src/vendor/purify.min.js");
 
@@ -292,6 +294,15 @@ async fn handle_conn(server: Arc<WebServer>, mut stream: TcpStream, peer: Socket
     };
 
     if request.is_websocket() {
+        let admin_events = request.path == "/api/events";
+        if admin_events && !local {
+            let _ = write_response(
+                &mut stream,
+                Response::text(403, "управление доступно только с этого компьютера"),
+            )
+            .await;
+            return;
+        }
         // Для хендшейка нужен исходный HTTP-заголовок целиком.
         let raw = std::mem::take(&mut request.raw);
         let prefixed = PrefixedStream {
@@ -300,13 +311,30 @@ async fn handle_conn(server: Arc<WebServer>, mut stream: TcpStream, peer: Socket
             inner: stream,
         };
         if let Ok(ws) = tokio_tungstenite::accept_async(prefixed).await {
-            let _ = streaming::run_viewer(server.hub.clone(), ws).await;
+            if admin_events {
+                let _ = streaming::run_admin_events(server.hub.clone(), ws).await;
+            } else {
+                let _ = streaming::run_viewer(server.hub.clone(), ws).await;
+            }
         }
         return;
     }
 
     let response = route(&server, &request, local).await;
     let _ = write_response(&mut stream, response).await;
+}
+
+/// Десктопный `index.html` плюс шим, который подменяет Tauri IPC на `/api`.
+fn admin_page() -> &'static str {
+    use std::sync::OnceLock;
+    static PAGE: OnceLock<String> = OnceLock::new();
+    PAGE.get_or_init(|| {
+        DESKTOP_INDEX.replacen(
+            "<script src=\"main.js\"></script>",
+            "<script src=\"tauri-shim.js\"></script>\n    <script src=\"main.js\"></script>",
+            1,
+        )
+    })
 }
 
 /* ---------------- responses ---------------- */
@@ -392,13 +420,15 @@ async fn route(server: &Arc<WebServer>, request: &Request, local: bool) -> Respo
         if !local {
             return Response::text(403, "управление доступно только с этого компьютера");
         }
-        return Response::file("text/html; charset=utf-8", ADMIN_HTML);
+        return Response::file("text/html; charset=utf-8", admin_page());
     }
-    if path == "/admin.js" {
-        if !local {
-            return Response::text(403, "управление доступно только с этого компьютера");
+    if local {
+        match path {
+            "/tauri-shim.js" => return Response::file("text/javascript; charset=utf-8", SHIM_JS),
+            "/main.js" => return Response::file("text/javascript; charset=utf-8", DESKTOP_JS),
+            "/styles.css" => return Response::file("text/css; charset=utf-8", DESKTOP_CSS),
+            _ => {}
         }
-        return Response::file("text/javascript; charset=utf-8", ADMIN_JS);
     }
 
     match (method, path) {
@@ -448,6 +478,7 @@ async fn api(
     body: &[u8],
 ) -> Response {
     match (method, path) {
+        ("POST", "/api/invoke") => api_invoke(server, body).await,
         ("GET", "/api/status") => {
             Response::json(200, status_payload(server, server.hub.status()))
         }
@@ -519,6 +550,195 @@ async fn api(
             None => Response::json(503, json!({ "error": "приложение не готово" })),
         },
         _ => Response::json(404, json!({ "error": "неизвестный метод" })),
+    }
+}
+
+/* ---------------- desktop IPC over HTTP ---------------- */
+
+#[derive(serde::Deserialize)]
+struct InvokeCall {
+    cmd: String,
+    #[serde(default)]
+    args: Value,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StreamOptions {
+    fps: u32,
+    quality: u8,
+    max_width: usize,
+}
+
+fn arg<T: serde::de::DeserializeOwned>(args: &Value, key: &str) -> Result<T, String> {
+    serde_json::from_value(args.get(key).cloned().unwrap_or(Value::Null))
+        .map_err(|e| format!("поле «{key}»: {e}"))
+}
+
+fn options_config(options: StreamOptions) -> StreamConfig {
+    StreamConfig {
+        fps: options.fps,
+        quality: options.quality,
+        max_width: options.max_width,
+    }
+}
+
+fn web_info_value(server: &WebServer) -> Value {
+    let settings = server.store.get();
+    let port = server.effective_port();
+    #[cfg(desktop)]
+    let mut addresses = Vec::new();
+    #[cfg(not(desktop))]
+    let addresses: Vec<String> = Vec::new();
+    #[cfg(desktop)]
+    {
+        let mut ips = streaming::local_addresses().unwrap_or_default();
+        ips.sort();
+        addresses.extend(ips.iter().map(|ip| format!("http://{ip}:{port}/")));
+        addresses.push(format!("http://127.0.0.1:{port}/admin"));
+    }
+    json!({
+        "running": server.port().is_some(),
+        "port": port,
+        "addresses": addresses,
+        "closeToTray": settings.close_to_tray,
+    })
+}
+
+async fn api_invoke(server: &Arc<WebServer>, body: &[u8]) -> Response {
+    let Ok(call) = serde_json::from_slice::<InvokeCall>(body) else {
+        return Response::json(400, json!({ "error": "ожидался JSON вида {cmd, args}" }));
+    };
+    match invoke_command(server, &call.cmd, call.args).await {
+        Ok(result) => Response::json(200, json!({ "result": result })),
+        Err(error) => Response::json(409, json!({ "error": error })),
+    }
+}
+
+fn app_of(server: &WebServer) -> Result<AppHandle, String> {
+    server.app().ok_or_else(|| "приложение не готово".to_string())
+}
+
+async fn invoke_command(
+    server: &Arc<WebServer>,
+    cmd: &str,
+    args: Value,
+) -> Result<Value, String> {
+    match cmd {
+        "platform_info" => Ok(json!({
+            "os": std::env::consts::OS,
+            "recorder": cfg!(any(target_os = "linux", target_os = "windows")),
+            "relay": true,
+            "web": cfg!(desktop),
+            "desktop": cfg!(desktop),
+        })),
+        "web_info" => Ok(web_info_value(server)),
+        "get_settings" => Ok(json!(server.store.get())),
+        "save_settings" => {
+            let settings: Settings = arg(&args, "settings")?;
+            let previous = server.store.get();
+            let saved = server.store.set(settings);
+            if previous.port != saved.port && saved.web_on_launch && server.port().is_some() {
+                server.restart_later(saved.port);
+            }
+            Ok(json!(saved))
+        }
+        "recording_status" => {
+            let app = app_of(server)?;
+            let recorder = app.state::<crate::capture::Recorder>();
+            Ok(json!(crate::capture::status(&recorder)))
+        }
+        "start_recording" => {
+            let app = app_of(server)?;
+            let recorder = app.state::<crate::capture::Recorder>();
+            let message = crate::capture::start_recording(&recorder, Some(&app)).await?;
+            Ok(json!(message))
+        }
+        "stop_recording" => {
+            let app = app_of(server)?;
+            let recorder = app.state::<crate::capture::Recorder>();
+            let message = crate::capture::stop_recording(&recorder)?;
+            Ok(json!(message))
+        }
+        "stream_start" => {
+            let app = app_of(server)?;
+            let options: StreamOptions = arg(&args, "options")?;
+            let settings = server.store.get();
+            // Веб-сервер уже поднят: запрос пришёл через него. Смена порта
+            // обрабатывается в save_settings (restart_later).
+            let status = server
+                .hub
+                .arm_local(app, settings.port, options_config(options))
+                .await?;
+            Ok(json!(status))
+        }
+        "relay_connect" => {
+            let app = app_of(server)?;
+            let url: String = arg(&args, "url")?;
+            let options: StreamOptions = arg(&args, "options")?;
+            let status = server
+                .hub
+                .arm_relay(app, url, options_config(options))
+                .await?;
+            Ok(json!(status))
+        }
+        "stream_status" => Ok(json!(server.hub.status())),
+        "stream_stop" => {
+            server.hub.deactivate();
+            Ok(json!(null))
+        }
+        "relay_ping" => {
+            let url: String = arg(&args, "url")?;
+            Ok(json!(streaming::ping_relay(url).await?))
+        }
+        "window_show" => {
+            let app = app_of(server)?;
+            crate::ui::show(&app);
+            Ok(json!(null))
+        }
+        "window_to_tray" => {
+            let app = app_of(server)?;
+            crate::ui::hide_to_tray(&app);
+            Ok(json!(null))
+        }
+        "window_hide_all" => {
+            let app = app_of(server)?;
+            crate::ui::hide_completely(&app);
+            Ok(json!(null))
+        }
+        "quit" => {
+            let app = app_of(server)?;
+            app.exit(0);
+            Ok(json!(null))
+        }
+        "chat_send" => {
+            let text: String = arg(&args, "text")?;
+            let markdown: bool = args
+                .get("markdown")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let image: Option<ChatImage> = match args.get("image") {
+                Some(Value::Null) | None => None,
+                Some(value) => serde_json::from_value(value.clone())
+                    .map_err(|e| format!("поле «image»: {e}"))?,
+            };
+            server.hub.send_chat(text, markdown, image).await?;
+            Ok(json!(null))
+        }
+        "chat_history" => Ok(json!(server.hub.chat_history())),
+        "open_chat_window" => {
+            #[cfg(desktop)]
+            {
+                let app = app_of(server)?;
+                crate::open_chat_window_impl(&app).await?;
+                Ok(json!(null))
+            }
+            #[cfg(not(desktop))]
+            {
+                Err("отдельное окно чата недоступно на этой платформе".into())
+            }
+        }
+        other => Err(format!("неизвестная команда: {other}")),
     }
 }
 

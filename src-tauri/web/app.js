@@ -106,6 +106,29 @@ function drawFrame(cell, jpeg) {
     img.src = url;
 }
 
+function decorateCodeBlocks(root) {
+    root.querySelectorAll('pre > code').forEach((code) => {
+        const text = code.textContent.replace(/\n$/, '');
+        const fragment = document.createDocumentFragment();
+        text.split('\n').forEach((line, index) => {
+            const row = document.createElement('span');
+            row.className = 'code-line';
+            const number = document.createElement('span');
+            number.className = 'code-no';
+            number.textContent = String(index + 1);
+            number.setAttribute('aria-hidden', 'true');
+            const source = document.createElement('span');
+            source.className = 'code-src';
+            source.textContent = line.length ? line : '\u00a0';
+            row.append(number, source);
+            fragment.appendChild(row);
+        });
+        code.textContent = '';
+        code.appendChild(fragment);
+        code.parentElement?.classList.add('code-block');
+    });
+}
+
 function appendChat(msg) {
     if (!msg || (!msg.text && !msg.image)) return;
     const div = document.createElement('div');
@@ -124,6 +147,7 @@ function appendChat(msg) {
                     ALLOWED_TAGS: ['p', 'br', 'strong', 'em', 'del', 'blockquote', 'ul', 'ol', 'li', 'code', 'pre', 'a', 'h1', 'h2', 'h3', 'h4', 'hr', 'table', 'thead', 'tbody', 'tr', 'th', 'td'],
                     ALLOWED_ATTR: ['href', 'title'],
                 });
+                decorateCodeBlocks(body);
                 body.querySelectorAll('a[href]').forEach((link) => {
                     link.target = '_blank';
                     link.rel = 'noopener noreferrer';

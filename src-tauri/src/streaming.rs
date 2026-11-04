@@ -210,6 +210,7 @@ struct Client {
     id: usize,
     tx: mpsc::Sender<ClientEvent>,
     recorder_link: bool,
+    counts_viewer: bool,
 }
 
 struct HubInner {
@@ -528,17 +529,31 @@ impl StreamHub {
     }
 
     pub fn register(&self, recorder_link: bool) -> (usize, mpsc::Receiver<ClientEvent>) {
+        self.register_inner(recorder_link, !recorder_link)
+    }
+
+    /// Локальная веб-админка: получает чат, но не считается зрителем.
+    pub fn register_admin(&self) -> (usize, mpsc::Receiver<ClientEvent>) {
+        self.register_inner(false, false)
+    }
+
+    fn register_inner(
+        &self,
+        recorder_link: bool,
+        counts_viewer: bool,
+    ) -> (usize, mpsc::Receiver<ClientEvent>) {
         let (tx, rx) = mpsc::channel(32);
         let mut i = self.inner.lock().unwrap();
         let id = i.next_id;
         i.next_id += 1;
-        if !recorder_link {
+        if counts_viewer {
             i.viewers += 1;
         }
         i.clients.push(Client {
             id,
             tx,
             recorder_link,
+            counts_viewer,
         });
         (id, rx)
     }
@@ -546,7 +561,7 @@ impl StreamHub {
     pub fn unregister(&self, id: usize) {
         let mut i = self.inner.lock().unwrap();
         if let Some(pos) = i.clients.iter().position(|c| c.id == id) {
-            if !i.clients[pos].recorder_link {
+            if i.clients[pos].counts_viewer {
                 i.viewers = i.viewers.saturating_sub(1);
             }
             i.clients.remove(pos);
@@ -752,6 +767,45 @@ where
             }
         }
     }
+    hub.unregister(id);
+    Ok(())
+}
+
+/// WebSocket для локальной веб-админки: транслирует события чата, чтобы
+/// браузерная копия интерфейса вела себя как десктопная.
+pub(crate) async fn run_admin_events<S>(
+    hub: Arc<StreamHub>,
+    ws: tokio_tungstenite::WebSocketStream<S>,
+) -> Result<(), String>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let (mut sink, mut rstream) = ws.split();
+    let (id, mut rx) = hub.register_admin();
+
+    loop {
+        tokio::select! {
+            ev = rx.recv() => match ev {
+                Some(ClientEvent::Chat(msg)) => {
+                    let payload = json!({ "event": "stream-chat", "payload": msg });
+                    if sink
+                        .send(Message::Text(payload.to_string().into()))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Some(_) => {}
+                None => break,
+            },
+            msg = rstream.next() => match msg {
+                Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
+                _ => {}
+            },
+        }
+    }
+
     hub.unregister(id);
     Ok(())
 }

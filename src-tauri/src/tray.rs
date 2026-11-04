@@ -2,7 +2,7 @@ use tauri::AppHandle;
 
 #[cfg(desktop)]
 use tauri::{
-    menu::{Menu, MenuItem, PredefinedMenuItem},
+    menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
 
@@ -13,6 +13,14 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "Показать окно", true, None::<&str>)?;
     let to_tray = MenuItem::with_id(app, "hide_tray", "Скрыть в трей", true, None::<&str>)?;
     let hide_all = MenuItem::with_id(app, "hide_all", "Скрыть полностью", true, None::<&str>)?;
+    let hidey = CheckMenuItem::with_id(
+        app,
+        "hidey",
+        "Хайди (прятать чат у курсора)",
+        true,
+        crate::chat_hide::enabled(),
+        None::<&str>,
+    )?;
     let quit = MenuItem::with_id(app, "quit", "Выход", true, None::<&str>)?;
     let menu = Menu::with_items(
         app,
@@ -21,18 +29,26 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
             &to_tray,
             &hide_all,
             &PredefinedMenuItem::separator(app)?,
+            &hidey,
+            &PredefinedMenuItem::separator(app)?,
             &quit,
         ],
     )?;
 
+    let hidey_toggle = hidey.clone();
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
         .tooltip("FuckExam")
         .menu(&menu)
         .show_menu_on_left_click(false)
-        .on_menu_event(|app, event| match event.id.as_ref() {
+        .on_menu_event(move |app, event| match event.id.as_ref() {
             "show" => crate::ui::show(app),
             "hide_tray" => crate::ui::hide_to_tray(app),
             "hide_all" => crate::ui::hide_completely(app),
+            "hidey" => {
+                let enabled = !hidey_toggle.is_checked().unwrap_or(false);
+                let _ = hidey_toggle.set_checked(enabled);
+                crate::chat_hide::set_enabled(app, enabled);
+            }
             "quit" => app.exit(0),
             _ => {}
         })

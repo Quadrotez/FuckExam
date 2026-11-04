@@ -208,6 +208,7 @@ const sWebLaunch = $('s-web-launch');
 const sCloseTray = $('s-close-tray');
 const sHideTray = $('s-hide-tray');
 const sHideAll = $('s-hide-all');
+const sShowWindow = $('s-show-window');
 const webLinksEl = $('web-links');
 const webCopy = $('web-copy');
 const webCopyAdmin = $('web-copy-admin');
@@ -390,6 +391,15 @@ sHideTray.addEventListener('click', async () => {
     try {
         await saveAppSettings();
         await invoke('window_to_tray');
+    } catch (e) {
+        setSaveFeedback(String(e), 'error');
+    }
+});
+
+sShowWindow.addEventListener('click', async () => {
+    try {
+        await invoke('window_show');
+        setSaveFeedback('окно показано', 'success');
     } catch (e) {
         setSaveFeedback(String(e), 'error');
     }
@@ -626,6 +636,7 @@ function appendChatMessage(log, msg) {
                     ALLOWED_TAGS: ['p', 'br', 'strong', 'em', 'del', 'blockquote', 'ul', 'ol', 'li', 'code', 'pre', 'a', 'h1', 'h2', 'h3', 'h4', 'hr', 'table', 'thead', 'tbody', 'tr', 'th', 'td'],
                     ALLOWED_ATTR: ['href', 'title'],
                 });
+                decorateCodeBlocks(body);
                 body.querySelectorAll('a[href]').forEach((link) => {
                     link.target = '_blank';
                     link.rel = 'noopener noreferrer';
@@ -661,6 +672,34 @@ function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, (c) =>
         ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])
     );
+}
+
+/** Блоки кода: подсветка, нумерация строк и перенос без повторения номера. */
+function decorateCodeBlocks(root) {
+    root.querySelectorAll('pre > code').forEach((code) => {
+        const text = code.textContent.replace(/\n$/, '');
+        const lines = text.split('\n');
+        const fragment = document.createDocumentFragment();
+        lines.forEach((line, index) => {
+            const row = document.createElement('span');
+            row.className = 'code-line';
+
+            const number = document.createElement('span');
+            number.className = 'code-no';
+            number.textContent = String(index + 1);
+            number.setAttribute('aria-hidden', 'true');
+
+            const source = document.createElement('span');
+            source.className = 'code-src';
+            source.textContent = line.length ? line : '\u00a0';
+
+            row.append(number, source);
+            fragment.appendChild(row);
+        });
+        code.textContent = '';
+        code.appendChild(fragment);
+        code.parentElement?.classList.add('code-block');
+    });
 }
 
 const chatEventSubscription = listen('stream-chat', (evt) => {
