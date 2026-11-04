@@ -45,9 +45,12 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
             "hide_tray" => crate::ui::hide_to_tray(app),
             "hide_all" => crate::ui::hide_completely(app),
             "hidey" => {
-                let enabled = !hidey_toggle.is_checked().unwrap_or(false);
-                let _ = hidey_toggle.set_checked(enabled);
+                // На GTK пункт уже переключил своё состояние сам, поэтому
+                // источником истины держим наш атомик, а меню только догоняет.
+                let enabled = !crate::chat_hide::enabled();
                 crate::chat_hide::set_enabled(app, enabled);
+                let _ = hidey_toggle.set_checked(enabled);
+                crate::diag::log(&format!("tray: hidey={enabled}"));
             }
             "quit" => app.exit(0),
             _ => {}
