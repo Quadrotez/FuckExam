@@ -16,13 +16,41 @@ pub fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
+/// Снимает слежение при выходе: KWin-скрипт не должен переживать приложение.
+#[cfg(desktop)]
+pub fn shutdown() {
+    #[cfg(target_os = "linux")]
+    crate::hidey_kwin::stop_blocking();
+}
+
 pub fn set_enabled(app: &AppHandle, enabled: bool) {
     ENABLED.store(enabled, Ordering::Relaxed);
+    #[cfg(all(desktop, target_os = "linux"))]
+    if enabled {
+        crate::hidey_kwin::start();
+    } else {
+        crate::hidey_kwin::stop();
+    }
     if !enabled {
         if let Some(window) = app.get_webview_window("chat") {
             let _ = window.show();
         }
     }
+}
+
+/// Позиция курсора в пикселях окна.
+///
+/// На KDE Wayland сначала спрашиваем KWin: GDK через XWayland видит курсор
+/// только пока он над нашим же окном.
+#[cfg(desktop)]
+fn cursor(app: &AppHandle) -> Option<(f64, f64)> {
+    #[cfg(target_os = "linux")]
+    if let Some(position) = crate::hidey_kwin::cursor() {
+        return Some(position);
+    }
+    app.cursor_position()
+        .ok()
+        .map(|position| (position.x, position.y))
 }
 
 #[cfg(desktop)]
@@ -55,25 +83,23 @@ async fn watch(app: AppHandle) {
             continue;
         }
 
-        let Ok(cursor) = app.cursor_position() else {
+        let Some((cx, cy)) = cursor(&app) else {
             if debug && tick % 10 == 0 {
-                crate::diag::log("hidey: cursor_position error");
+                crate::diag::log("hidey: курсор недоступен");
             }
             continue;
         };
 
         if debug && tick % 10 == 0 {
             crate::diag::log(&format!(
-                "hidey: cursor=({:.0},{:.0}) rect={rect:?} hidden={hidden} visible={:?}",
-                cursor.x,
-                cursor.y,
+                "hidey: cursor=({cx:.0},{cy:.0}) rect={rect:?} hidden={hidden} visible={:?}",
                 window.is_visible().ok()
             ));
         }
 
         if hidden {
             match rect {
-                Some((x, y, w, h)) if !inside(cursor, x, y, w, h, SHOW_MARGIN) => {
+                Some((x, y, w, h)) if !inside(cx, cy, x, y, w, h, SHOW_MARGIN) => {
                     if debug {
                         crate::diag::log("hidey: show");
                     }
@@ -102,11 +128,10 @@ async fn watch(app: AppHandle) {
             size.height as f64,
         );
         rect = Some((x, y, w, h));
-        if inside(cursor, x, y, w, h, HIDE_MARGIN) && window.is_visible().unwrap_or(true) {
+        if inside(cx, cy, x, y, w, h, HIDE_MARGIN) && window.is_visible().unwrap_or(true) {
             if debug {
                 crate::diag::log(&format!(
-                    "hidey: hide at cursor=({:.0},{:.0}) rect=({x:.0},{y:.0},{w:.0},{h:.0})",
-                    cursor.x, cursor.y
+                    "hidey: hide at cursor=({cx:.0},{cy:.0}) rect=({x:.0},{y:.0},{w:.0},{h:.0})"
                 ));
             }
             let _ = window.hide();
@@ -116,16 +141,6 @@ async fn watch(app: AppHandle) {
 }
 
 #[cfg(desktop)]
-fn inside(
-    cursor: tauri::PhysicalPosition<f64>,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-    margin: f64,
-) -> bool {
-    cursor.x >= x - margin
-        && cursor.x <= x + w + margin
-        && cursor.y >= y - margin
-        && cursor.y <= y + h + margin
+fn inside(cx: f64, cy: f64, x: f64, y: f64, w: f64, h: f64, margin: f64) -> bool {
+    cx >= x - margin && cx <= x + w + margin && cy >= y - margin && cy <= y + h + margin
 }

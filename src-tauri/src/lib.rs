@@ -10,6 +10,8 @@ pub mod capture;
 
 pub mod chat_hide;
 pub mod diag;
+#[cfg(all(desktop, target_os = "linux"))]
+pub mod hidey_kwin;
 pub mod settings;
 
 #[cfg(target_os = "linux")]
@@ -348,6 +350,10 @@ pub fn run() {
     };
 
     app.run(|_app_handle, _event| {
+        #[cfg(desktop)]
+        if let tauri::RunEvent::Exit = _event {
+            chat_hide::shutdown();
+        }
         #[cfg(not(desktop))]
         if let tauri::RunEvent::Resumed = _event {
             use tauri::Emitter as _;
