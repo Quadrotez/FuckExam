@@ -4,13 +4,23 @@ use tauri::{AppHandle, Manager};
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
 
-/// Курсор ближе этого расстояния к окну чата — прячем окно.
+/// Отступ по умолчанию, если настройки почему-то недоступны.
 #[cfg(desktop)]
-const HIDE_MARGIN: f64 = 10.0;
-/// Курсор дальше этого расстояния — возвращаем окно. Небольшой разрыв между
-/// порогами не даёт окну мигать на границе, но и не растягивает «зону тишины».
+const DEFAULT_HIDE_MARGIN: f64 = 10.0;
+/// Насколько дальше должна отойти мышь, чтобы окно вернулось: разрыв между
+/// порогами не даёт окну мигать на границе.
 #[cfg(desktop)]
-const SHOW_MARGIN: f64 = 32.0;
+const SHOW_GAP: f64 = 22.0;
+
+/// Пороги «Хайди» в пикселях: (прятать, показывать).
+#[cfg(desktop)]
+fn margins(app: &AppHandle) -> (f64, f64) {
+    let hide = app
+        .try_state::<std::sync::Arc<crate::settings::SettingsStore>>()
+        .map(|store| store.get().hidey_margin as f64)
+        .unwrap_or(DEFAULT_HIDE_MARGIN);
+    (hide, hide + SHOW_GAP)
+}
 
 pub fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
@@ -97,9 +107,14 @@ async fn watch(app: AppHandle) {
             ));
         }
 
+        let (hide_margin, show_margin) = margins(&app);
+        if debug && tick % 10 == 0 {
+            crate::diag::log(&format!("hidey: margins={hide_margin}/{show_margin}"));
+        }
+
         if hidden {
             match rect {
-                Some((x, y, w, h)) if !inside(cx, cy, x, y, w, h, SHOW_MARGIN) => {
+                Some((x, y, w, h)) if !inside(cx, cy, x, y, w, h, show_margin) => {
                     if debug {
                         crate::diag::log("hidey: show");
                     }
@@ -128,7 +143,7 @@ async fn watch(app: AppHandle) {
             size.height as f64,
         );
         rect = Some((x, y, w, h));
-        if inside(cx, cy, x, y, w, h, HIDE_MARGIN) && window.is_visible().unwrap_or(true) {
+        if inside(cx, cy, x, y, w, h, hide_margin) && window.is_visible().unwrap_or(true) {
             if debug {
                 crate::diag::log(&format!(
                     "hidey: hide at cursor=({cx:.0},{cy:.0}) rect=({x:.0},{y:.0},{w:.0},{h:.0})"

@@ -18,6 +18,8 @@ pub struct Settings {
     pub mode: String,
     pub web_on_launch: bool,
     pub close_to_tray: bool,
+    /// Насколько близко мышь должна подойти к окну чата, чтобы «Хайди» его спрятал.
+    pub hidey_margin: u32,
 }
 
 impl Default for Settings {
@@ -31,6 +33,7 @@ impl Default for Settings {
             mode: "local".into(),
             web_on_launch: true,
             close_to_tray: true,
+            hidey_margin: 10,
         }
     }
 }
@@ -43,6 +46,7 @@ impl Settings {
         self.fps = self.fps.clamp(1, 60);
         self.quality = self.quality.clamp(1, 100);
         self.max_width = self.max_width.clamp(64, 3840);
+        self.hidey_margin = self.hidey_margin.min(400);
         if self.mode != "relay" {
             self.mode = "local".into();
         }

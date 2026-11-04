@@ -206,6 +206,7 @@ const sSave = $('s-save');
 const sSaveFeedback = $('s-save-feedback');
 const sWebLaunch = $('s-web-launch');
 const sCloseTray = $('s-close-tray');
+const sHideyMargin = $('s-hidey-margin');
 const sHideTray = $('s-hide-tray');
 const sHideAll = $('s-hide-all');
 const sShowWindow = $('s-show-window');
@@ -225,6 +226,7 @@ const DEFAULT_SETTINGS = {
     mode: 'local',
     webOnLaunch: true,
     closeToTray: true,
+    hideyMargin: 10,
 };
 
 let appSettings = { ...DEFAULT_SETTINGS };
@@ -272,6 +274,7 @@ function applySettingsToUi(s) {
     sRelayUrl.value = s.relayUrl || '';
     sWebLaunch.checked = s.webOnLaunch !== false;
     sCloseTray.checked = s.closeToTray !== false;
+    if (sHideyMargin) sHideyMargin.value = String(s.hideyMargin ?? DEFAULT_SETTINGS.hideyMargin);
     setSeg(s.mode);
 }
 
@@ -285,6 +288,9 @@ function collectSettings() {
         mode: sMode,
         webOnLaunch: sWebLaunch.checked,
         closeToTray: sCloseTray.checked,
+        hideyMargin: sHideyMargin
+            ? Math.max(0, parseInt(sHideyMargin.value, 10) || 0)
+            : appSettings.hideyMargin,
     };
 }
 
